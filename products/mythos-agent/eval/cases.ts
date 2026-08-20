@@ -147,3 +147,15 @@ export const evaluationCases: readonly EvaluationCase[] = [
   bugfixCase,
   credentialIsolationCase,
 ]
+
+export function selectEvaluationCases(ids: readonly string[]): readonly EvaluationCase[] {
+  if (ids.length === 0) return evaluationCases
+  const selectedIds = new Set(ids)
+  const selected = evaluationCases.filter(testCase => selectedIds.has(testCase.id))
+  if (selected.length !== selectedIds.size) {
+    const knownIds = new Set(evaluationCases.map(testCase => testCase.id))
+    const unknownIds = [...selectedIds].filter(id => !knownIds.has(id))
+    throw new Error(`未知评测用例：${unknownIds.join(', ')}`)
+  }
+  return selected
+}

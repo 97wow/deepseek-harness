@@ -1,0 +1,11 @@
+- id: llm-deepseek
+  config:
+    thinking: enabled
+    reasoningEffort: high
+    maxTokens: 32768
+    defaultContextWindow: 128000
+    models:
+      - id: deepseek-v4-flash
+        name: Mythos M3
+        contextWindow: 128000
+        maxTokens: 32768

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { evaluationCases, type EvaluationCase, type VerificationResult } from './cases.js'
+import { selectEvaluationCases, type EvaluationCase, type VerificationResult } from './cases.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
 
 interface CaseResult {
@@ -23,6 +23,8 @@ interface EvaluationReport {
     dshVersion: string
     endpoint: string
     mythosVersion: string
+    overlaySha256?: string
+    variant: string
   }
   cases: CaseResult[]
   completedAt: string
@@ -47,18 +49,29 @@ const repoRoot = resolve(productRoot, '..', '..')
 const dshHome = join(productRoot, 'home')
 const sessionsRoot = join(dshHome, 'sessions')
 const cliPath = join(repoRoot, 'apps', 'cli', 'lib', 'bin.js')
+const evalPatch = process.env.MYTHOS_EVAL_PATCH
+  ? resolve(process.env.MYTHOS_EVAL_PATCH)
+  : undefined
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
 }
 
-async function configurationSha256(): Promise<string> {
+async function configurationSha256(overlay?: string): Promise<string> {
   const hash = createHash('sha256')
   for (const filename of ['cordis.yml', 'cordis.patch.yml', 'package.json']) {
     hash.update(filename)
     hash.update(await readFile(join(dshHome, 'profiles', 'mythos', filename)))
   }
+  if (overlay) {
+    hash.update('evaluation-overlay')
+    hash.update(await readFile(overlay))
+  }
   return hash.digest('hex')
+}
+
+async function fileSha256(path: string): Promise<string> {
+  return createHash('sha256').update(await readFile(path)).digest('hex')
 }
 
 function safeEndpoint(raw: string): string {
@@ -93,7 +106,14 @@ async function collectSessionFiles(root: string): Promise<Set<string>> {
 
 async function runProcess(testCase: EvaluationCase, cwd: string): Promise<number> {
   return await new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [cliPath, '--profile', 'mythos', testCase.prompt], {
+    const args = [
+      cliPath,
+      '--profile',
+      'mythos',
+      ...(evalPatch ? ['--patch', evalPatch] : []),
+      testCase.prompt,
+    ]
+    const child = spawn(process.execPath, args, {
       cwd,
       env: {
         ...process.env,
@@ -191,18 +211,9 @@ async function main(): Promise<void> {
   const [dshManifest, mythosManifest, configHash] = await Promise.all([
     readJson(join(repoRoot, 'package.json')),
     readJson(join(productRoot, 'package.json')),
-    configurationSha256(),
+    configurationSha256(evalPatch),
   ])
-  const selectedIds = new Set(process.argv.slice(2))
-  const selectedCases = selectedIds.size === 0
-    ? evaluationCases
-    : evaluationCases.filter(testCase => selectedIds.has(testCase.id))
-  if (selectedCases.length === 0) throw new Error('没有匹配的评测用例')
-  if (selectedCases.length !== selectedIds.size) {
-    const knownIds = new Set(evaluationCases.map(testCase => testCase.id))
-    const unknownIds = [...selectedIds].filter(id => !knownIds.has(id))
-    throw new Error(`未知评测用例：${unknownIds.join(', ')}`)
-  }
+  const selectedCases = selectEvaluationCases(process.argv.slice(2))
 
   const results: CaseResult[] = []
   for (const testCase of selectedCases) {
@@ -216,6 +227,8 @@ async function main(): Promise<void> {
       dshVersion: String(dshManifest.version),
       endpoint: safeEndpoint(process.env.DEEPSEEK_BASE_URL),
       mythosVersion: String(mythosManifest.version),
+      ...(evalPatch ? { overlaySha256: await fileSha256(evalPatch) } : {}),
+      variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default',
     },
     cases: results,
     completedAt: new Date().toISOString(),
