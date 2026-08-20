@@ -3,6 +3,8 @@ home/profiles/node_modules/
 home/.credentials.yaml
 home/settings.yaml
 home/storage/
+home/storages/
 home/sessions/
 runs/
 flywheel/data/
+dist/

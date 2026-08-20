@@ -3,13 +3,33 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "mythos": {
+    "dshVersion": "0.1.0-rc.8",
+    "dshCommit": "141eb6fef83422698aef7a981029e843e8161534",
+    "dshRepository": "https://github.com/deepseek-ai/deepseek-harness.git"
+  },
   "scripts": {
+    "agent": "tsx product/launch.ts headless",
     "eval": "tsx eval/run.ts",
     "eval:repeat": "tsx eval/repeat.ts",
     "flywheel:analyze": "tsx flywheel/analyze.ts",
     "flywheel:build": "tsx flywheel/build.ts",
     "gate": "tsx flywheel/gate.ts",
+    "release:check": "tsx release/check.ts",
+    "release:pack": "tsx release/pack.ts",
+    "release:verify": "tsx release/verify.ts",
+    "smoke:web": "tsx product/smoke-web.ts",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/gate-policy.ts flywheel/gate.ts"
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/gate-policy.ts flywheel/gate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts",
+    "web": "tsx product/launch.ts web"
+  },
+  "dependencies": {
+    "js-yaml": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9"
   }
 }

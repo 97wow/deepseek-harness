@@ -1,0 +1,3 @@
+name: Mythos Agent
+description: 基于 DeepSeek Harness、由 Mythos M3 驱动的完整编码 Agent。
+order: 0
