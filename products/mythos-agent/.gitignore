@@ -4,3 +4,4 @@ home/.credentials.yaml
 home/settings.yaml
 home/storage/
 home/sessions/
+runs/
