@@ -5,3 +5,4 @@ home/settings.yaml
 home/storage/
 home/sessions/
 runs/
+flywheel/data/
