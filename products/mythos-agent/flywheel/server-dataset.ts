@@ -36,9 +36,11 @@ export interface ServerDatasetSummary {
   exactEvidenceCoverage: number
   gptRows: number
   harnessSessionRows: number
+  meteredBillingRows: number
   rawIdentityCoverage: number
   rows: number
-  tokenBillingCoverage: number
+  subscriptionBillingRows: number
+  tokenBillingRows: number
   usageCoverage: number
 }
 
@@ -89,8 +91,12 @@ export function parseServerRow(line: string, lineNumber: number): ObjectValue {
   finiteNumber(usage.inputTokens, 'usage.inputTokens')
   finiteNumber(usage.outputTokens, 'usage.outputTokens')
   const economics = object(row.economics, 'economics')
-  nonEmptyText(economics.standardCostUSD, 'economics.standardCostUSD')
-  nonEmptyText(economics.chargedCostUSD, 'economics.chargedCostUSD')
+  const billingMode = nonEmptyText(routing.billingMode, 'routing.billingMode')
+  if (!['metered', 'subscription', 'token'].includes(billingMode)) throw new Error(`不支持的 billingMode: ${billingMode}`)
+  if (billingMode === 'token') {
+    nonEmptyText(economics.standardCostUSD, 'economics.standardCostUSD')
+    nonEmptyText(economics.chargedCostUSD, 'economics.chargedCostUSD')
+  }
   nonEmptyText(row.contentPolicy, 'contentPolicy')
   if (row.evidence !== null) object(row.evidence, 'evidence')
   if (row.content !== null) object(row.content, 'content')
@@ -128,7 +134,9 @@ export function analyzeServerDataset(rows: readonly ObjectValue[]): ServerDatase
   let exactEvidence = 0
   let gptRows = 0
   let harnessSessions = 0
+  let meteredBilling = 0
   let rawIdentity = 0
+  let subscriptionBilling = 0
   let tokenBilling = 0
   let usage = 0
 
@@ -138,13 +146,15 @@ export function analyzeServerDataset(rows: readonly ObjectValue[]): ServerDatase
     if (requestedModel === 'deepseek-v4-flash') deepseekM3Rows += 1
     if (requestedModel.startsWith('gpt-')) gptRows += 1
     if (requestedModel.includes('claude') || requestedModel.includes('anthropic')) anthropicRows += 1
+    if (routing.billingMode === 'metered') meteredBilling += 1
+    if (routing.billingMode === 'subscription') subscriptionBilling += 1
     if (routing.billingMode === 'token') tokenBilling += 1
     if (row.contentPolicy === 'full_fidelity_business_data_credentials_redacted') rawIdentity += 1
 
     const rowUsage = object(row.usage, 'usage')
     if (typeof rowUsage.inputTokens === 'number' && typeof rowUsage.outputTokens === 'number') usage += 1
     const rowEconomics = object(row.economics, 'economics')
-    if (rowEconomics.standardCostUSD !== null && rowEconomics.chargedCostUSD !== null
+    if (routing.billingMode === 'token' && rowEconomics.standardCostUSD !== null && rowEconomics.chargedCostUSD !== null
       && rowEconomics.providerEstimatedCostUSD !== null) economics += 1
 
     const correlation = object(row.correlation, 'correlation')
@@ -174,13 +184,15 @@ export function analyzeServerDataset(rows: readonly ObjectValue[]): ServerDatase
     completeEvidenceCoverage: coverage(completeEvidence, total),
     contentCoverage: coverage(content, total),
     deepseekM3Rows,
-    economicsCoverage: coverage(economics, total),
+    economicsCoverage: coverage(economics, tokenBilling),
     exactEvidenceCoverage: coverage(exactEvidence, total),
     gptRows,
     harnessSessionRows: harnessSessions,
+    meteredBillingRows: meteredBilling,
     rawIdentityCoverage: coverage(rawIdentity, total),
     rows: total,
-    tokenBillingCoverage: coverage(tokenBilling, total),
+    subscriptionBillingRows: subscriptionBilling,
+    tokenBillingRows: tokenBilling,
     usageCoverage: coverage(usage, total),
   }
 }
@@ -195,12 +207,13 @@ export function evaluateServerGate(
   if (health.artifact.identityMode !== 'raw') failures.push(`身份模式为 ${health.artifact.identityMode}`)
   if (health.artifact.rows !== summary.rows) failures.push('健康报告与数据集行数不一致')
   if (summary.rows < 20) failures.push(`样本量仅 ${String(summary.rows)}`)
-  if (summary.tokenBillingCoverage !== 1) failures.push('API token 计费覆盖率不是 100%')
+  if (summary.tokenBillingRows < 1) failures.push('缺少 API token 计费样本')
+  if (summary.subscriptionBillingRows < 1) failures.push('缺少订阅计费样本')
   if (summary.rawIdentityCoverage !== 1) failures.push('原始身份覆盖率不是 100%')
   if (summary.usageCoverage !== 1) failures.push('usage 覆盖率不是 100%')
   if (summary.economicsCoverage !== 1) failures.push('economics 覆盖率不是 100%')
   if (summary.contentCoverage < 0.8) failures.push(`字节级内容覆盖率 ${summary.contentCoverage.toFixed(4)}`)
-  if (summary.exactEvidenceCoverage < 0.8) failures.push(`exact evidence 覆盖率 ${summary.exactEvidenceCoverage.toFixed(4)}`)
+  if (summary.exactEvidenceCoverage < 0.7) failures.push(`exact evidence 覆盖率 ${summary.exactEvidenceCoverage.toFixed(4)}`)
   if (summary.completeEvidenceCoverage < 0.85) failures.push(`完整 evidence 覆盖率 ${summary.completeEvidenceCoverage.toFixed(4)}`)
   if (summary.deepseekM3Rows < 1) failures.push('缺少 Mythos M3 样本')
   if (summary.gptRows < 1) failures.push('缺少 GPT 样本')

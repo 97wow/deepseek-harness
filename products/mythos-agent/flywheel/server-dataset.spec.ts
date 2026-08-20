@@ -13,14 +13,14 @@ import {
   type ServerDatasetSummary,
 } from './server-dataset.js'
 
-function row(model: string, harnessSessionId: string | null = null): Record<string, unknown> {
+function row(model: string, harnessSessionId: string | null = null, billingMode = 'token'): Record<string, unknown> {
   return {
     schemaVersion: 2,
     eventId: `event-${model}`,
     occurredAt: '2026-08-21T00:00:00+08:00',
     correlation: { harnessSessionId },
     identities: { user: 1, apiKey: 2, account: 3, group: 4 },
-    routing: { requestedModel: model, billingMode: 'token' },
+    routing: { requestedModel: model, billingMode },
     usage: { inputTokens: 10, outputTokens: 2 },
     economics: {
       standardCostUSD: '0.1',
@@ -54,7 +54,7 @@ describe('服务器飞轮数据整理', () => {
     const rows = parseServerDataset([
       JSON.stringify(row('deepseek-v4-flash', 'session-1')),
       JSON.stringify(row('gpt-5.6-sol')),
-      JSON.stringify(row('anthropic/claude-haiku-4-5')),
+      JSON.stringify(row('anthropic/claude-haiku-4-5', null, 'subscription')),
     ].join('\n'))
     expect(analyzeServerDataset(rows)).toMatchObject({
       anthropicRows: 1,
@@ -64,7 +64,8 @@ describe('服务器飞轮数据整理', () => {
       gptRows: 1,
       harnessSessionRows: 1,
       rawIdentityCoverage: 1,
-      tokenBillingCoverage: 1,
+      subscriptionBillingRows: 1,
+      tokenBillingRows: 2,
     })
   })
 
@@ -88,9 +89,11 @@ describe('服务器飞轮数据整理', () => {
       exactEvidenceCoverage: 0.9,
       gptRows: 1,
       harnessSessionRows: 1,
+      meteredBillingRows: 1,
       rawIdentityCoverage: 1,
       rows: 20,
-      tokenBillingCoverage: 1,
+      subscriptionBillingRows: 10,
+      tokenBillingRows: 9,
       usageCoverage: 1,
     }
     expect(evaluateServerGate(summary, health(20))).toEqual({ failures: [], passed: true })
