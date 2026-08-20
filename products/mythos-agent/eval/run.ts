@@ -1,5 +1,6 @@
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,12 +18,19 @@ interface CaseResult {
 }
 
 interface EvaluationReport {
+  baseline: {
+    configurationSha256: string
+    dshVersion: string
+    endpoint: string
+    mythosVersion: string
+  }
   cases: CaseResult[]
   completedAt: string
   model: string
   passed: boolean
   profile: string
   reportVersion: 1
+  runId: string
   startedAt: string
   totals: {
     cacheReadTokens: number
@@ -39,6 +47,28 @@ const repoRoot = resolve(productRoot, '..', '..')
 const dshHome = join(productRoot, 'home')
 const sessionsRoot = join(dshHome, 'sessions')
 const cliPath = join(repoRoot, 'apps', 'cli', 'lib', 'bin.js')
+
+async function readJson(path: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
+}
+
+async function configurationSha256(): Promise<string> {
+  const hash = createHash('sha256')
+  for (const filename of ['cordis.yml', 'cordis.patch.yml', 'package.json']) {
+    hash.update(filename)
+    hash.update(await readFile(join(dshHome, 'profiles', 'mythos', filename)))
+  }
+  return hash.digest('hex')
+}
+
+function safeEndpoint(raw: string): string {
+  const url = new URL(raw)
+  url.username = ''
+  url.password = ''
+  url.search = ''
+  url.hash = ''
+  return url.toString().replace(/\/$/, '')
+}
 
 async function collectSessionFiles(root: string): Promise<Set<string>> {
   const result = new Set<string>()
@@ -158,6 +188,11 @@ async function main(): Promise<void> {
   if (!process.env.DEEPSEEK_BASE_URL) throw new Error('缺少 DEEPSEEK_BASE_URL')
 
   const startedAt = new Date().toISOString()
+  const [dshManifest, mythosManifest, configHash] = await Promise.all([
+    readJson(join(repoRoot, 'package.json')),
+    readJson(join(productRoot, 'package.json')),
+    configurationSha256(),
+  ])
   const selectedIds = new Set(process.argv.slice(2))
   const selectedCases = selectedIds.size === 0
     ? evaluationCases
@@ -176,12 +211,19 @@ async function main(): Promise<void> {
   }
 
   const report: EvaluationReport = {
+    baseline: {
+      configurationSha256: configHash,
+      dshVersion: String(dshManifest.version),
+      endpoint: safeEndpoint(process.env.DEEPSEEK_BASE_URL),
+      mythosVersion: String(mythosManifest.version),
+    },
     cases: results,
     completedAt: new Date().toISOString(),
     model: 'deepseek-v4-flash',
     passed: results.every(result => result.passed),
     profile: 'mythos',
     reportVersion: 1,
+    runId: randomUUID(),
     startedAt,
     totals: buildTotals(results),
   }
