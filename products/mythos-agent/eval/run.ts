@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { selectEvaluationCases, type EvaluationCase, type VerificationResult } from './cases.js'
-import { parseEvaluationTimeoutMs } from './options.js'
+import { parseEvaluationTimeoutMs, parseReplayMetadata } from './options.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
 
 interface CaseResult {
@@ -36,6 +36,10 @@ interface EvaluationReport {
   passed: boolean
   profile: string
   reportVersion: 1
+  replay?: {
+    iteration: number
+    total: number
+  }
   runId: string
   startedAt: string
   totals: {
@@ -238,6 +242,10 @@ async function main(): Promise<void> {
   if (!process.env.DEEPSEEK_BASE_URL) throw new Error('缺少 DEEPSEEK_BASE_URL')
 
   const startedAt = new Date().toISOString()
+  const replay = parseReplayMetadata(
+    process.env.MYTHOS_EVAL_REPLAY_ITERATION,
+    process.env.MYTHOS_EVAL_REPLAY_TOTAL,
+  )
   const [dshManifest, mythosManifest, configHash] = await Promise.all([
     readJson(join(repoRoot, 'package.json')),
     readJson(join(productRoot, 'package.json')),
@@ -267,6 +275,7 @@ async function main(): Promise<void> {
     passed: results.every(result => result.passed),
     profile: 'mythos',
     reportVersion: 1,
+    ...(replay ? { replay } : {}),
     runId: randomUUID(),
     startedAt,
     totals: buildTotals(results),

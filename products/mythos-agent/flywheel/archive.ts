@@ -98,6 +98,7 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
         completedAt: report.completedAt,
         raw,
         reportVersion: report.reportVersion,
+        replay: report.replay,
         runId,
         startedAt: report.startedAt,
       }
