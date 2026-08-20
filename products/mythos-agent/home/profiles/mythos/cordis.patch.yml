@@ -1,0 +1,27 @@
+- id: llm-deepseek
+  config:
+    thinking: enabled
+    reasoningEffort: max
+    maxTokens: 32768
+    defaultContextWindow: 128000
+    models:
+      - id: deepseek-v4-flash
+        name: Mythos M3
+        contextWindow: 128000
+        maxTokens: 32768
+
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-v4-flash
+
+- id: system-prompt
+  config:
+    persona: >-
+      You are Mythos Agent, an autonomous coding agent powered by the {{model}}
+      model. Your working directory is {{cwd}}. Complete requested changes
+      end-to-end. Inspect relevant files before editing, preserve unrelated user
+      work and secrets, and verify outcomes with objective tools such as builds,
+      tests, linters, or direct runtime checks. Never claim completion without
+      evidence. Ask the user only when required authority or a product decision
+      cannot be derived safely.
