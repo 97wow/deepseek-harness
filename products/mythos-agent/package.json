@@ -6,6 +6,6 @@
   "scripts": {
     "eval": "tsx eval/run.ts",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/cases.ts eval/session-metrics.ts"
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/cases.ts eval/options.ts eval/session-metrics.ts"
   }
 }

@@ -5,15 +5,18 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { selectEvaluationCases, type EvaluationCase, type VerificationResult } from './cases.js'
+import { parseEvaluationTimeoutMs } from './options.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
 
 interface CaseResult {
   durationMs: number
   id: string
+  metricsError?: string
   metrics?: SessionMetrics
   passed: boolean
   processExitCode: number
   rawSession?: string
+  timedOut: boolean
   verification: VerificationResult
 }
 
@@ -24,6 +27,7 @@ interface EvaluationReport {
     endpoint: string
     mythosVersion: string
     overlaySha256?: string
+    timeoutMs: number
     variant: string
   }
   cases: CaseResult[]
@@ -52,6 +56,7 @@ const cliPath = join(repoRoot, 'apps', 'cli', 'lib', 'bin.js')
 const evalPatch = process.env.MYTHOS_EVAL_PATCH
   ? resolve(process.env.MYTHOS_EVAL_PATCH)
   : undefined
+const evaluationTimeoutMs = parseEvaluationTimeoutMs(process.env.MYTHOS_EVAL_TIMEOUT_MS)
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
@@ -104,7 +109,10 @@ async function collectSessionFiles(root: string): Promise<Set<string>> {
   return result
 }
 
-async function runProcess(testCase: EvaluationCase, cwd: string): Promise<number> {
+async function runProcess(
+  testCase: EvaluationCase,
+  cwd: string,
+): Promise<{ exitCode: number, timedOut: boolean }> {
   return await new Promise((resolvePromise, reject) => {
     const args = [
       cliPath,
@@ -121,8 +129,26 @@ async function runProcess(testCase: EvaluationCase, cwd: string): Promise<number
       },
       stdio: 'inherit',
     })
-    child.once('error', reject)
-    child.once('exit', code => resolvePromise(code ?? 1))
+    let timedOut = false
+    let forceKillTimer: NodeJS.Timeout | undefined
+    const timeout = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGTERM')
+      forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 5_000)
+      forceKillTimer.unref()
+    }, evaluationTimeoutMs)
+    timeout.unref()
+
+    child.once('error', (error) => {
+      clearTimeout(timeout)
+      if (forceKillTimer) clearTimeout(forceKillTimer)
+      reject(error)
+    })
+    child.once('exit', (code) => {
+      clearTimeout(timeout)
+      if (forceKillTimer) clearTimeout(forceKillTimer)
+      resolvePromise({ exitCode: code ?? 1, timedOut })
+    })
   })
 }
 
@@ -135,12 +161,17 @@ async function runCase(testCase: EvaluationCase): Promise<CaseResult> {
   const beforeSessions = await collectSessionFiles(sessionsRoot)
   const start = performance.now()
   let processExitCode = 1
+  let timedOut = false
   let verification = failedVerification('Agent 进程未完成')
 
   try {
     await testCase.setup(workspace)
-    processExitCode = await runProcess(testCase, workspace)
-    verification = processExitCode === 0
+    const processResult = await runProcess(testCase, workspace)
+    processExitCode = processResult.exitCode
+    timedOut = processResult.timedOut
+    verification = timedOut
+      ? failedVerification(`Agent 执行超过 ${evaluationTimeoutMs}ms`)
+      : processExitCode === 0
       ? await testCase.verify(workspace)
       : failedVerification(`Agent 进程退出码为 ${processExitCode}`)
   } catch (error) {
@@ -153,29 +184,28 @@ async function runCase(testCase: EvaluationCase): Promise<CaseResult> {
   const newSessions = [...afterSessions].filter(path => !beforeSessions.has(path))
   const rawSession = newSessions.length === 1 ? newSessions[0] : undefined
   let metrics: SessionMetrics | undefined
+  let metricsError: string | undefined
   if (rawSession) {
     try {
       metrics = readCompressedSessionMetrics(rawSession)
     } catch (error) {
-      verification = failedVerification(
-        `会话指标解析失败：${error instanceof Error ? error.message : String(error)}`,
-      )
+      metricsError = `会话指标解析失败：${error instanceof Error ? error.message : String(error)}`
     }
   } else {
-    verification = failedVerification(
-      newSessions.length === 0
-        ? '未找到本次运行的 DSH 原始会话'
-        : `发现 ${newSessions.length} 个新会话，无法可靠归因`,
-    )
+    metricsError = newSessions.length === 0
+      ? '未找到本次运行的 DSH 原始会话'
+      : `发现 ${newSessions.length} 个新会话，无法可靠归因`
   }
 
   return {
     durationMs: Math.round(performance.now() - start),
     id: testCase.id,
+    ...(metricsError ? { metricsError } : {}),
     metrics,
     passed: processExitCode === 0 && verification.passed && metrics !== undefined,
     processExitCode,
     rawSession: rawSession ? relative(productRoot, rawSession) : undefined,
+    timedOut,
     verification,
   }
 }
@@ -228,6 +258,7 @@ async function main(): Promise<void> {
       endpoint: safeEndpoint(process.env.DEEPSEEK_BASE_URL),
       mythosVersion: String(mythosManifest.version),
       ...(evalPatch ? { overlaySha256: await fileSha256(evalPatch) } : {}),
+      timeoutMs: evaluationTimeoutMs,
       variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default',
     },
     cases: results,
