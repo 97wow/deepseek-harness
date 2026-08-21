@@ -59,11 +59,11 @@ function isWindowsEvaluationEscape(prefix: string, suffix: string): boolean {
 
 function escapedNewlineLength(command: string, backslashIndex: number): number {
   if (command[backslashIndex + 1] === '\n') return 1
-  if (command[backslashIndex + 1] === '\r' && command[backslashIndex + 2] === '\n') return 2
   return 0
 }
 
 function shellTokens(command: string): ShellToken[] {
+  if (command.includes('\r')) throw new Error('package script 仅接受 LF 换行')
   const tokens: ShellToken[] = []
   let token = ''
   let quote: "'" | '"' | null = null
@@ -127,13 +127,12 @@ function shellTokens(command: string): ShellToken[] {
     }
     if (character === '#'
       && !started) {
-      while (index + 1 < command.length && command[index + 1] !== '\n' && command[index + 1] !== '\r') index += 1
+      while (index + 1 < command.length && command[index + 1] !== '\n') index += 1
       continue
     }
-    if (character === '\n' || character === '\r') {
+    if (character === '\n') {
       flush()
       if (tokens.at(-1)?.kind === 'word') tokens.push({ kind: 'boundary', value: ';' })
-      if (character === '\r' && command[index + 1] === '\n') index += 1
       continue
     }
     if (character === ' ' || character === '\t') {

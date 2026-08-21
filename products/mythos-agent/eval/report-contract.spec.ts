@@ -174,6 +174,13 @@ describe('M3 + DSH 评测证据报告', () => {
     'tsx .\\eval\\real.ts',
     'tsx ..\\eval\\real.ts',
     'tsx\u00a0eval/real.ts',
+    'echo ok\rtsx eval/new-safe.ts',
+    'echo ok\r\ntsx eval/new-safe.ts',
+    'echo ok \\\r\ntsx eval/new-safe.ts',
+    'tsx "eval/run-\r\ncomprehensive.ts"',
+    "tsx 'eval/run-\r\ncomprehensive.ts'",
+    'echo ok # ignored\r\ntsx eval/new-safe.ts',
+    'echo ok\ntsx eval/run.ts\r\necho done',
     "tsx 'eval/run-\\\ncomprehensive.ts'",
     'tsx eval/run.ts\\',
     'tsx eval/real.ts > result.txt',
@@ -205,6 +212,11 @@ describe('M3 + DSH 评测证据报告', () => {
     const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
     scripts['run.ts'] = 'echo ok \\\n# ignored ; tsx eval/run.ts'
     expect(registryMatches(scripts)).toBe(false)
+  })
+
+  it('反斜线 CRLF script 动态加入 registry 时 fail closed', () => {
+    const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
+    expect(registryMatches({ ...scripts, injected: 'echo ok \\\r\ntsx eval/new-safe.ts' })).toBe(false)
   })
 
   it('内部非公开 runner 显式声明全部 commitment 归属', () => {
