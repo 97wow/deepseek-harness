@@ -1,18 +1,14 @@
 import { execFile } from 'node:child_process'
 import { dirname, join } from 'node:path'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   buildEvaluationReport,
   classifyFailure,
   endpointCommitment,
   evaluationCommitment,
-  evaluationEntrypoints,
-  extractEvaluationEntrypoints,
-  internalEvaluationModules,
   implementationFiles,
   parseEvaluationReport,
   sourceEvidence,
@@ -21,6 +17,7 @@ import {
   type EvaluationEntry,
   type ReportCase,
 } from './report-contract.js'
+import { evaluationEntryRegistry, type EvaluationEntryId } from './entry-registry.js'
 
 const execFileAsync = promisify(execFile)
 const entries: EvaluationEntry[] = ['advanced-journey', 'journey', 'qwen-local', 'real-repository', 'standard']
@@ -69,15 +66,6 @@ async function reportInput(productRoot: string, repoRoot: string, cases: ReportC
   })
 }
 
-function registryMatches(scripts: Readonly<Record<string, string>>): boolean {
-  try {
-    const actual = [...new Set(Object.values(scripts).flatMap(extractEvaluationEntrypoints))].sort()
-    return JSON.stringify(actual) === JSON.stringify(Object.keys(evaluationEntrypoints).sort())
-  } catch {
-    return false
-  }
-}
-
 describe('M3 + DSH 评测证据报告', () => {
   it('tracked diff digest 稳定且与 untracked 状态分离', async () => {
     const { productRoot, repoRoot } = await fixture()
@@ -101,127 +89,37 @@ describe('M3 + DSH 评测证据报告', () => {
     ]))
   })
 
-  it.each(entries)('%s 的每个中央关键文件变更都会改变 commitment', async entry => {
+  it.each(Object.keys(evaluationEntryRegistry) as EvaluationEntryId[])('%s registry entry 的每个关键文件变更都会改变 commitment', async entryId => {
+    const definition = evaluationEntryRegistry[entryId]
     const { productRoot } = await fixture()
-    const overlays = entry === 'advanced-journey' ? ['eval/overlays/journey-subagent.yml'] : []
-    let previous = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 }, entry, overlays, productRoot })
-    for (const file of implementationFiles(entry, overlays)) {
-      await writeFile(join(productRoot, file), `${file}:changed:${previous.sha256}\n`)
-      const next = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 }, entry, overlays, productRoot })
-      expect(next.sha256, file).not.toBe(previous.sha256)
-      previous = next
+    const overlays = definition.commitment === 'advanced-journey' ? ['eval/overlays/journey-subagent.yml'] : []
+    let previous = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 },
+      entry: definition.commitment, entryId, overlays, productRoot })
+    for (const file of previous.files.map(item => item.path)) {
+      await writeFile(join(productRoot, file), file + ':changed:' + previous.sha256 + '\n')
+      const nextCommitment = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 },
+        entry: definition.commitment, entryId, overlays, productRoot })
+      expect(nextCommitment.sha256, file).not.toBe(previous.sha256)
+      previous = nextCommitment
     }
   })
 
-  it('package scripts 的公开 eval 入口与中央注册表双向一致', async () => {
-    const manifest = JSON.parse(await readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')) as {
-      scripts: Record<string, string>
-    }
-    const files = Object.values(manifest.scripts).flatMap(extractEvaluationEntrypoints).sort()
-    expect(Object.keys(evaluationEntrypoints).sort()).toEqual([...new Set(files)])
-    expect(new Set(files).size).toBe(10)
-    expect(Object.keys(evaluationEntrypoints)).toHaveLength(10)
-    expect(evaluationEntrypoints['qwen-local-benchmark.ts']).toBe('qwen-local')
+  it.each(Object.keys(evaluationEntryRegistry) as EvaluationEntryId[])('%s 的结构化运行参数改变 commitment', async entryId => {
+    const definition = evaluationEntryRegistry[entryId]
+    const { productRoot } = await fixture()
+    const first = await evaluationCommitment({ config: { caseIds: ['a'], endpoint: 'https://example.invalid/v1', marker: 'a' },
+      entry: definition.commitment, entryId, productRoot })
+    const second = await evaluationCommitment({ config: { caseIds: ['b'], endpoint: 'https://example.invalid/v1', marker: 'b' },
+      entry: definition.commitment, entryId, productRoot })
+    expect(second.runtime.parametersSha256).not.toBe(first.runtime.parametersSha256)
+    expect(second.sha256).not.toBe(first.sha256)
   })
 
-  it.each([
-    ['tsx --tsconfig eval/not-entry.ts eval/real.ts --flag', ['real.ts']],
-    ['tsx -p eval/not-entry.ts eval/real.ts --flag', ['real.ts']],
-    ['echo tsx eval/not-entry.ts && tsx eval/real.ts', ['real.ts']],
-    ["printf '%s' 'tsx eval/not-entry.ts' && tsx eval/real.ts", ['real.ts']],
-    ['tsx --tsconfig config.json eval/new-entry.ts --case a', ['new-entry.ts']],
-    ['tsx ./eval/new-entry.ts --case a', ['new-entry.ts']],
-    ["MODE=test tsx 'eval/new-entry.ts' --case a", ['new-entry.ts']],
-    ['MODE=test tsx "./eval/new-entry.ts" --case a', ['new-entry.ts']],
-    ['MODE=test env EXTRA=value tsx eval/new-entry.ts --case a', ['new-entry.ts']],
-    ['env -u OLD MODE=test pnpm exec tsx eval/new-entry.ts --case a', ['new-entry.ts']],
-    ['npx --yes tsx ./eval/new-entry.ts --case a', ['new-entry.ts']],
-    ['command tsx eval/new-safe.ts', ['new-safe.ts']],
-    ['MODE=test command -p time -p tsx ./eval/new-safe.ts --case a', ['new-safe.ts']],
-    ['tsx eval/new\\-entry.ts --case a', ['new-entry.ts']],
-    ['tsx product/launch.ts && tsx --tsconfig x eval/new-entry.ts --variant v || echo failed; tsx eval/other.ts', ['new-entry.ts', 'other.ts']],
-    ['echo ok # tsx eval/not-entry.ts', []],
-    ['echo ok # tsx eval/not-entry.ts\ntsx eval/real.ts', ['real.ts']],
-    ["printf '%s' '# tsx eval/not-entry.ts' && tsx eval/real.ts", ['real.ts']],
-    ['echo ok \\\n# ignored ; tsx eval/run.ts', []],
-    ['echo ok \\\n   # ignored ; tsx eval/run.ts', []],
-    ['echo ok \\\ntsx eval/run.ts', []],
-    ['echo ok && \\\ntsx eval/run.ts', ['run.ts']],
-    ['tsx eval/run-\\\ncomprehensive.ts', ['run-comprehensive.ts']],
-    ['tsx "eval/run-\\\ncomprehensive.ts"', ['run-comprehensive.ts']],
-    ['tsx \\\n\\\neval/run.ts', ['run.ts']],
-    ['tsx product/launch.ts eval/not-an-entry.ts', []],
-    ['tsc --noEmit eval/not-an-entry.ts', []],
-  ])('静态提取公开入口：%s', (command, expected) => {
-    expect(extractEvaluationEntrypoints(command)).toEqual(expected)
-  })
-
-  it.each([
-    'tsx --unknown eval/real.ts',
-    "tsx 'eval/real.ts",
-    'tsx $(printf eval/real.ts)',
-    'tsx `printf eval/real.ts`',
-    'tsx "eval/$ENTRY.ts"',
-    '$RUNNER eval/real.ts',
-    "sh -c 'tsx eval/real.ts'",
-    "/bin/sh -c 'tsx eval/real.ts'",
-    "./bash -c 'tsx eval/real.ts'",
-    "/usr/bin/env sh -c 'tsx eval/real.ts'",
-    'pnpm --silent exec tsx eval/real.ts',
-    'runner eval/real.ts',
-    'command runner eval/real.ts',
-    'pnpm test eval/real.ts',
-    'tsx .\\eval\\real.ts',
-    'tsx ..\\eval\\real.ts',
-    'tsx\u00a0eval/real.ts',
-    'echo ok\rtsx eval/new-safe.ts',
-    'echo ok\r\ntsx eval/new-safe.ts',
-    'echo ok \\\r\ntsx eval/new-safe.ts',
-    'tsx "eval/run-\r\ncomprehensive.ts"',
-    "tsx 'eval/run-\r\ncomprehensive.ts'",
-    'echo ok # ignored\r\ntsx eval/new-safe.ts',
-    'echo ok\ntsx eval/run.ts\r\necho done',
-    "tsx 'eval/run-\\\ncomprehensive.ts'",
-    'tsx eval/run.ts\\',
-    'tsx eval/real.ts > result.txt',
-    'tsx eval/real.ts < input.txt',
-    'echo ok | tsx eval/real.ts',
-  ])('无法安全静态解析时 fail closed：%s', command => {
-    expect(() => extractEvaluationEntrypoints(command)).toThrow()
-  })
-
-  it.each([
-    'command tsx eval/new-safe.ts',
-    'time tsx eval/new-safe.ts',
-    'runner eval/new-safe.ts',
-    "sh -c 'tsx eval/new-safe.ts'",
-    "/usr/bin/env /bin/sh -c 'tsx eval/new-safe.ts'",
-    'tsx .\\eval\\new-safe.ts',
-    'tsx\u00a0eval/new-safe.ts',
-  ])('可疑 script 注入 package scripts 时 registry 不会伪通过：%s', injected => {
-    const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
-    expect(registryMatches({ ...scripts, injected })).toBe(false)
-  })
-
-  it('package script 的 POSIX 注释不会制造虚假入口', () => {
-    const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
-    expect(registryMatches({ ...scripts, comment: 'echo ok # tsx eval/not-an-entry.ts' })).toBe(true)
-  })
-
-  it('反斜线续行后的注释替换已注册 script 时 registry 不再伪报 10/10', () => {
-    const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
-    scripts['run.ts'] = 'echo ok \\\n# ignored ; tsx eval/run.ts'
-    expect(registryMatches(scripts)).toBe(false)
-  })
-
-  it('反斜线 CRLF script 动态加入 registry 时 fail closed', () => {
-    const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
-    expect(registryMatches({ ...scripts, injected: 'echo ok \\\r\ntsx eval/new-safe.ts' })).toBe(false)
-  })
-
-  it('内部非公开 runner 显式声明全部 commitment 归属', () => {
-    for (const [filename, owners] of Object.entries(internalEvaluationModules)) {
-      for (const owner of owners) expect(implementationFiles(owner)).toContain(`eval/${filename}`)
+  it('registry 显式覆盖内部 runner 与 launcher commitment', () => {
+    expect(evaluationEntryRegistry.journey.dependencies).toContain('eval/journey-turn-runner.ts')
+    expect(evaluationEntryRegistry['advanced-journey'].dependencies).toContain('eval/journey-turn-runner.ts')
+    for (const entry of entries) {
+      expect(implementationFiles(entry)).toEqual(expect.arrayContaining(['eval/entry-registry.ts', 'eval/launch.ts']))
     }
   })
 
