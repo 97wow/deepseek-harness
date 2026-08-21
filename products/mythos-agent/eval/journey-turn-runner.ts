@@ -1,6 +1,5 @@
-import { createRequire } from 'node:module'
 import { readFileSync, unlinkSync } from 'node:fs'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createUserMessage, installModelSelection, SessionId } from '../../../apps/cli/src/mythos-eval-workspace-modules.js'
 
 export const name = 'mythos-journey-turn-runner'
 export const inject = ['agentDefaultModel', 'agents', 'sessionPersistence', 'sessions']
@@ -35,26 +34,7 @@ export function shouldRecoverPlaceholderTurn(events: readonly SessionEvent[], fi
   return /^(?:let me (?:think|consider)|i(?:'ll| will) (?:start|begin|handle|work)|我(?:先|将|会)(?:想|考虑|开始|处理)|接下来(?:我)?(?:会|将))/iu.test(text)
 }
 
-async function loadRunnerModules(): Promise<RunnerModules> {
-  const require = createRequire(fileURLToPath(new URL('../../../apps/cli/package.json', import.meta.url)))
-  const load = async (name: string): Promise<Record<string, unknown>> =>
-    await import(pathToFileURL(require.resolve(name)).href) as Record<string, unknown>
-  const [agent, llm, session] = await Promise.all([
-    load('@deepseek-ai/dsh-agent'),
-    load('@deepseek-ai/dsh-llm'),
-    load('@deepseek-ai/dsh-session'),
-  ])
-  if (typeof agent.installModelSelection !== 'function'
-    || typeof llm.createUserMessage !== 'function'
-    || typeof session.SessionId !== 'function') {
-    throw new Error('DSH 旅程驱动依赖缺少预期导出')
-  }
-  return {
-    createUserMessage: llm.createUserMessage as RunnerModules['createUserMessage'],
-    installModelSelection: agent.installModelSelection as RunnerModules['installModelSelection'],
-    SessionId: session.SessionId as RunnerModules['SessionId'],
-  }
-}
+const runnerModules: RunnerModules = { createUserMessage, installModelSelection, SessionId }
 
 function readTurnConfig(): TurnConfig {
   const action = process.env.MYTHOS_JOURNEY_ACTION
@@ -108,7 +88,7 @@ async function run(ctx: RunnerContext, config: TurnConfig): Promise<void> {
   const sessions = ctx.get('sessions') as { flush(session: unknown): Promise<void> } | undefined
   if (!exit || !agents || !defaultModel || !sessions) return
 
-  const modules = await loadRunnerModules()
+  const modules = runnerModules
   const selection = defaultModel.currentSelection()
   const setup = (agentCtx: RunnerContext): void => {
     modules.installModelSelection(agentCtx, { current: selection, assembled: undefined })

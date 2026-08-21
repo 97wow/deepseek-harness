@@ -1,18 +1,17 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { lstat, readFile, realpath } from 'node:fs/promises'
-import { dirname, posix, relative, resolve, sep } from 'node:path'
+import { posix, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import {
   evaluationEntryRegistry,
   registryEntryIdsForCommitment,
   validateEvaluationRegistry,
-  type DynamicDependencyRoot,
   type EvaluationEntry,
   type EvaluationEntryId,
-  type ScopedDependencyPath,
 } from './entry-registry.js'
 import { collectRelativeImportClosure } from './import-closure.js'
+import { validateEvaluationModuleDispatch } from './launch.js'
 
 export type { EvaluationEntry, EvaluationEntryId } from './entry-registry.js'
 
@@ -154,10 +153,6 @@ async function trackedWorkspace(productRoot: string): Promise<{ productPrefix: s
   return { productPrefix, trackedFiles: new Set(filesOutput.split('\0').filter(path => path !== '')), workspaceRoot }
 }
 
-function scopedWorkspacePath(productPrefix: string, value: ScopedDependencyPath): string {
-  return value.scope === 'product' ? posix.join(productPrefix, value.path) : value.path
-}
-
 async function readTrackedFile(workspaceRoot: string, path: string, trackedFiles: ReadonlySet<string>): Promise<Buffer> {
   if (!trackedFiles.has(path)) throw new Error('评测 commitment 禁止读取 untracked 文件')
   const absolute = resolve(workspaceRoot, path)
@@ -165,43 +160,6 @@ async function readTrackedFile(workspaceRoot: string, path: string, trackedFiles
   const information = await lstat(absolute)
   if (!information.isFile()) throw new Error('评测 commitment 仅接受非符号链接普通文件')
   return await readFile(absolute)
-}
-
-async function validateWorkspacePackages(
-  roots: readonly DynamicDependencyRoot[],
-  workspaceRoot: string,
-  trackedFiles: ReadonlySet<string>,
-): Promise<string[]> {
-  const packages = roots.filter((root): root is Extract<DynamicDependencyRoot, { kind: 'workspace-package' }> =>
-    root.kind === 'workspace-package')
-  if (packages.length === 0) return []
-  const resolutionFiles = ['apps/cli/package.json', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']
-  const cli = JSON.parse((await readTrackedFile(workspaceRoot, resolutionFiles[0]!, trackedFiles)).toString('utf8')) as {
-    dependencies?: Record<string, string>
-    devDependencies?: Record<string, string>
-  }
-  const files = new Set(resolutionFiles)
-  for (const dependency of packages) {
-    if (!Object.hasOwn(cli.dependencies ?? {}, dependency.packageName)
-      && !Object.hasOwn(cli.devDependencies ?? {}, dependency.packageName)) {
-      throw new Error('动态 workspace package 未由 CLI manifest 固定引用')
-    }
-    const manifest = JSON.parse((await readTrackedFile(workspaceRoot, dependency.manifest, trackedFiles)).toString('utf8')) as {
-      exports?: { '.'?: { default?: unknown } }
-      main?: unknown
-      name?: unknown
-    }
-    const runtimeEntry = manifest.exports?.['.']?.default ?? manifest.main
-    const expectedSource = typeof runtimeEntry === 'string' && runtimeEntry.startsWith('./lib/') && runtimeEntry.endsWith('.js')
-      ? posix.join(dirname(dependency.manifest).split(sep).join('/'), 'src', runtimeEntry.slice('./lib/'.length, -3) + '.ts')
-      : null
-    if (manifest.name !== dependency.packageName || expectedSource !== dependency.sourceEntry) {
-      throw new Error('动态 workspace package manifest 与固定源码入口不一致')
-    }
-    files.add(dependency.manifest)
-    files.add(dependency.sourceEntry)
-  }
-  return [...files]
 }
 
 function commitmentPath(workspacePath: string, productPrefix: string): string {
@@ -235,23 +193,18 @@ export async function evaluationCommitment(input: {
   const endpointDigest = endpointCommitment(endpoint)
   const entryId = input.entryId ?? resolveEvaluationEntryId(input.entry, input.config)
   validateEvaluationRegistry()
+  validateEvaluationModuleDispatch()
   const registryEntry = evaluationEntryRegistry.get(entryId)
   if (registryEntry === undefined || registryEntry.visibility !== 'public') throw new Error('未知或不可启动的评测 entry ID')
   if (registryEntry.commitment !== input.entry) throw new Error('评测 entry ID 与 commitment 归属不一致')
   const explicitFiles = implementationFilesForEntry(entryId, input.overlays)
   const { productPrefix, trackedFiles, workspaceRoot } = await trackedWorkspace(productRoot)
   const productFiles = explicitFiles.map(path => posix.join(productPrefix, path))
-  const dynamicFiles = registryEntry.dynamicDependencyRoots
-    .filter((root): root is Extract<DynamicDependencyRoot, { kind: 'file' }> => root.kind === 'file')
-    .map(root => scopedWorkspacePath(productPrefix, root.root))
-  const packageFiles = await validateWorkspacePackages(registryEntry.dynamicDependencyRoots, workspaceRoot, trackedFiles)
-  const closureRoots = [...new Set([...productFiles, ...dynamicFiles, ...packageFiles].filter(path => path.endsWith('.ts')))]
-  const allowedDynamicLoaders = new Set(registryEntry.dynamicDependencyRoots
-    .map(root => scopedWorkspacePath(productPrefix, root.loader)))
+  const closureRoots = productFiles.filter(path => path.endsWith('.ts'))
   const importClosure = await collectRelativeImportClosure(workspaceRoot, closureRoots, {
-    allowedDynamicLoaders, allowedFiles: trackedFiles,
+    allowedFiles: trackedFiles, controlPathPrefix: `${productPrefix}/eval/`,
   })
-  const workspaceFiles = [...new Set([...productFiles, ...dynamicFiles, ...packageFiles, ...importClosure.files])].sort()
+  const workspaceFiles = [...new Set([...productFiles, ...importClosure.files])].sort()
   const files = await Promise.all(workspaceFiles.map(async path => {
     const contents = await readTrackedFile(workspaceRoot, path, trackedFiles)
     return { path: commitmentPath(path, productPrefix), sha256: createHash('sha256').update(contents).digest('hex') }

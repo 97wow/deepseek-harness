@@ -33,8 +33,15 @@ async function fixture(): Promise<{ productRoot: string; repoRoot: string }> {
     await mkdir(dirname(path), { recursive: true })
     const contents = name === 'package.json' ? JSON.stringify({
       mythos: { dshCommit: 'dsh-commit', dshVersion: '0.1.0-rc.8' }, version: '0.1.1',
-    }) : name === 'eval/launch.ts' ? 'await import(dynamicEntry)\n'
-      : name === 'eval/journey-turn-runner.ts' ? 'require.resolve(dynamicPackage)\n' : `${name}:initial\n`
+    }) : name === 'eval/launch.ts' ? [
+      "void import('./run-advanced-journeys.js')", "void import('./repeat-advanced-journeys.js')",
+      "void import('./run-comprehensive.js')", "void import('./run-journeys.js')", "void import('./repeat-journeys.js')",
+      "void import('./run-qwen-local.js')", "void import('./qwen-local-benchmark.js')", "void import('./run-real-repo.js')",
+      "void import('./repeat.js')", "void import('./run.js')",
+      ].join('\n') + '\n'
+      : name === 'eval/journey-turn-runner.ts'
+        ? "import '../../apps/cli/src/mythos-eval-workspace-modules.js'\n"
+        : name.endsWith('.ts') ? 'export {}\n' : `${name}:initial\n`
     await writeFile(path, contents)
   }
   const packageDefinitions = [
@@ -45,10 +52,16 @@ async function fixture(): Promise<{ productRoot: string; repoRoot: string }> {
   await mkdir(join(repoRoot, 'apps/cli'), { recursive: true })
   await writeFile(join(repoRoot, 'apps/cli/package.json'), JSON.stringify({
     devDependencies: Object.fromEntries(packageDefinitions.map(([name]) => [name, 'workspace:^'])),
+    name: '@deepseek-ai/dsh',
   }))
+  await mkdir(join(repoRoot, 'apps/cli/src'), { recursive: true })
+  await writeFile(join(repoRoot, 'apps/cli/src/mythos-eval-workspace-modules.ts'), [
+    "export * from '@deepseek-ai/dsh-agent'", "export * from '@deepseek-ai/dsh-llm'",
+    "export * from '@deepseek-ai/dsh-session'",
+  ].join('\n') + '\n')
   await writeFile(join(repoRoot, 'package.json'), '{}')
   await writeFile(join(repoRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
-  await writeFile(join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n')
+  await writeFile(join(repoRoot, 'pnpm-workspace.yaml'), "packages:\n  - apps/*\n  - packages/*/*\n")
   for (const [name, directory] of packageDefinitions) {
     await mkdir(join(repoRoot, directory, 'src'), { recursive: true })
     await writeFile(join(repoRoot, directory, 'package.json'), JSON.stringify({
@@ -153,7 +166,7 @@ describe('M3 + DSH 评测证据报告', () => {
     }
   })
 
-  it.each([...evaluationEntryRegistry.keys()])('%s commitment 完成静态与声明动态依赖闭包验证', async entryId => {
+  it.each([...evaluationEntryRegistry.keys()])('%s commitment 完成固定 launcher 与静态模块闭包验证', async entryId => {
     const definition = evaluationEntryRegistry.get(entryId)!
     const productRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
     const commitment = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
@@ -200,7 +213,7 @@ describe('M3 + DSH 评测证据报告', () => {
     expect(message).not.toContain('secret-user-body-must-not-leak')
   })
 
-  it('声明的 journey workspace 动态依赖目标变更会改变 digest', async () => {
+  it('journey workspace 静态依赖目标变更会改变 digest', async () => {
     const { productRoot, repoRoot } = await fixture()
     const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
       entry: 'journey', entryId: 'journey', productRoot })
@@ -216,7 +229,7 @@ describe('M3 + DSH 评测证据报告', () => {
       exports: { '.': { default: './lib/other.js' } }, name: '@deepseek-ai/dsh-agent',
     }))
     await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'journey', entryId: 'journey', productRoot })).rejects.toThrow('固定源码入口不一致')
+      entry: 'journey', entryId: 'journey', productRoot })).rejects.toThrow()
   })
 
   it('endpoint commitment 对完整 URL 语义敏感并拒绝 userinfo', () => {
