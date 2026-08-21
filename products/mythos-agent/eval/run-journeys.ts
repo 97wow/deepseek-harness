@@ -8,12 +8,14 @@ import { journeyCases } from './journeys.js'
 import { journeyConfigurationSha256 } from './journey-configuration.js'
 import { readCompressedSessionMetrics } from './session-metrics.js'
 import { buildEvaluationReport } from './report-contract.js'
+import { readObservedProviderEvidence } from './runtime-evidence.js'
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(productRoot, '..', '..')
 const dshHome = join(productRoot, 'home')
 const cliPath = join(repoRoot, 'apps', 'cli', 'lib', 'bin.js')
 const overlay = join(productRoot, 'eval', 'overlays', 'journey.yml')
+const runtimeEvidenceOverlay = join(productRoot, 'eval', 'overlays', 'runtime-evidence.yml')
 const timeoutMs = Number(process.env.MYTHOS_JOURNEY_TIMEOUT_MS ?? 600_000)
 
 async function findSession(id: string): Promise<string | undefined> {
@@ -36,12 +38,16 @@ async function findSession(id: string): Promise<string | undefined> {
 async function runTurn(workspace: string, sessionId: string, prompt: string, action: 'create' | 'resume') {
   const started = performance.now()
   const promptFile = join(tmpdir(), `mythos-journey-prompt-${randomUUID()}`)
+  const evidencePath = join(tmpdir(), `mythos-runtime-evidence-${randomUUID()}.ndjson`)
   await writeFile(promptFile, prompt, { mode: 0o600 })
   try {
-    return await new Promise<{ durationMs: number; exitCode: number; timedOut: boolean }>((resolvePromise, reject) => {
-      const child = spawn(process.execPath, [cliPath, '--profile', 'mythos', '--patch', overlay, 'journey'], {
+    const result = await new Promise<{ durationMs: number; exitCode: number; timedOut: boolean }>((resolvePromise, reject) => {
+      const child = spawn(process.execPath, [cliPath, '--profile', 'mythos', '--patch', runtimeEvidenceOverlay,
+        '--patch', overlay, 'journey'], {
         cwd: workspace,
-        env: { ...process.env, DSH_HOME: dshHome, MYTHOS_JOURNEY_ACTION: action, MYTHOS_JOURNEY_PROMPT_FILE: promptFile, MYTHOS_JOURNEY_SESSION_ID: sessionId },
+        env: { ...process.env, DSH_HOME: dshHome, MYTHOS_JOURNEY_ACTION: action,
+          MYTHOS_JOURNEY_PROMPT_FILE: promptFile, MYTHOS_JOURNEY_SESSION_ID: sessionId,
+          MYTHOS_RUNTIME_EVIDENCE_PATH: evidencePath },
         stdio: 'inherit',
       })
       let timedOut = false
@@ -52,6 +58,7 @@ async function runTurn(workspace: string, sessionId: string, prompt: string, act
         resolvePromise({ durationMs: Math.round(performance.now() - started), exitCode: code ?? 1, timedOut })
       })
     })
+    return { ...result, providerResponses: await readObservedProviderEvidence(evidencePath) }
   } finally {
     await rm(promptFile, { force: true })
   }
@@ -100,6 +107,9 @@ for (const testCase of journeyCases) {
     passed: processPassed && verification.passed && behaviorPassed,
     processExitCode: processPassed ? 0 : 1,
     rawSession: raw ? relative(productRoot, raw) : undefined,
+    runtimeEvidence: { agentIdleObserved: metrics?.agentIdleObserved === true,
+      providerResponses: stages.flatMap(stage => stage.providerResponses),
+      sessionFlushObserved: metrics?.sessionFlushObserved === true },
     stages,
     tier: 'journey',
     timedOut: stages.some(stage => stage.timedOut),
@@ -126,6 +136,8 @@ const report = await buildEvaluationReport({
     repetitions: process.env.MYTHOS_EVAL_REPLAY_TOTAL ?? null, suite: 'journey', timeoutMs, variant: 'default' },
   draft,
   entry: 'journey',
+  entryId: process.env.MYTHOS_EVAL_ENTRY_ID as never,
+  overlays: [relative(productRoot, runtimeEvidenceOverlay), 'eval/overlays/journey.yml'],
   productRoot,
   repoRoot,
   requestedModel: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',

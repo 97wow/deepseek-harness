@@ -29,6 +29,7 @@ const fixtureEntryImports = [
   ['comprehensive', './run.js'],
   ['journey', './run-journeys.js'],
   ['journey-repeat', './repeat-journeys.js'],
+  ['m3-smoke', './run.js'],
   ['qwen-local', './run.js'],
   ['qwen-local-benchmark', './qwen-local-benchmark.js'],
   ['real-repository', './run-real-repo.js'],
@@ -98,14 +99,20 @@ function commitmentFilePath(productRoot: string, repoRoot: string, path: string)
 
 function completeCase(overrides: Partial<ReportCase> = {}): ReportCase {
   return {
-    agentIdleObserved: true,
-    billing: { amount: 1, currency: 'USD', source: 'provider_invoice', verified: true },
     id: 'case',
-    metrics: { cacheReadTokens: 3, inputTokens: 10, outputTokens: 2, turnReason: 'completed' },
+    metrics: { cacheReadTokens: 3, inputTokens: 10, outputTokens: 2, turnReason: 'completed', usageObserved: true },
     metricsSource: 'dsh_session_log',
     passed: true,
     processExitCode: 0,
-    sessionFlushObserved: true,
+    runtimeEvidence: {
+      agentIdleObserved: true,
+      providerResponses: [{
+        billing: { amount: 1, currency: 'USD', source: 'provider_invoice' },
+        identity: { deployment: 'm3-production', model: 'deepseek-v4-flash', provider: 'deepseek' },
+        source: 'm3_provider_response',
+      }],
+      sessionFlushObserved: true,
+    },
     verification: { passed: true },
     ...overrides,
   }
@@ -236,12 +243,69 @@ describe('M3 + DSH 评测证据报告', () => {
     expect(JSON.stringify(second)).not.toContain('example.invalid')
   })
 
-  it('unknown 服务端身份使正式接受 fail closed', async () => {
+  it('请求标签不能伪造服务端身份，缺失响应证据时 fail closed', async () => {
     const { productRoot, repoRoot } = await fixture()
-    const report = await reportInput(productRoot, repoRoot, [completeCase()])
+    const report = await reportInput(productRoot, repoRoot, [completeCase({
+      runtimeEvidence: { agentIdleObserved: true, providerResponses: [], sessionFlushObserved: true },
+    })])
     expect(report.passed).toBe(false)
     expect(report.modelIdentity).toMatchObject({ server: { status: 'unknown_unverified' } })
     expect(report.acceptance).toMatchObject({ failures: expect.arrayContaining(['server_identity_unverified']), passed: false })
+  })
+
+  it('可信运行字段进入报告并解除对应 observability 拒绝', async () => {
+    const { productRoot, repoRoot } = await fixture()
+    const report = await reportInput(productRoot, repoRoot, [completeCase()])
+    expect(report.modelIdentity).toMatchObject({
+      requested: { model: 'requested-model', provider: 'requested-provider' },
+      server: { deployment: 'm3-production', model: 'deepseek-v4-flash', provider: 'deepseek', status: 'observed' },
+    })
+    expect(report.cases).toMatchObject([{
+      accepted: true,
+      billing: { amount: 1, currency: 'USD', source: 'provider_invoice', tokensVerified: true, verified: true },
+      completionEvidence: {
+        agentIdle: { status: 'observed', value: true },
+        externalVerifier: { status: 'observed', value: true },
+        sessionFlush: { status: 'observed', value: true },
+        turnReason: { status: 'observed', value: 'completed' },
+      },
+    }])
+    expect((report.acceptance as { failures: string[] }).failures).not.toEqual(expect.arrayContaining([
+      'server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete',
+    ]))
+  })
+
+  it('费用与 idle/flush 缺失不会由旧标签或零值伪造', async () => {
+    const { productRoot, repoRoot } = await fixture()
+    const testCase = completeCase({ agentIdleObserved: true, billing: { amount: 0 }, sessionFlushObserved: true })
+    testCase.runtimeEvidence = {
+      agentIdleObserved: false,
+      providerResponses: [{ billing: null,
+        identity: { deployment: 'm3-production', model: 'deepseek-v4-flash', provider: 'deepseek' },
+        source: 'm3_provider_response' }],
+      sessionFlushObserved: false,
+    }
+    const report = await reportInput(productRoot, repoRoot, [testCase])
+    expect(report.cases).toMatchObject([{
+      accepted: false,
+      billing: { amount: null, verified: false },
+      completionEvidence: {
+        agentIdle: { status: 'unknown_unverified', value: null },
+        sessionFlush: { status: 'unknown_unverified', value: null },
+      },
+    }])
+    expect(report.acceptance).toMatchObject({
+      failures: expect.arrayContaining(['billing_unverified', 'completion_evidence_incomplete']), passed: false,
+    })
+  })
+
+  it('没有 DSH usage 事件时零 token 不能伪装成已观测', async () => {
+    const { productRoot, repoRoot } = await fixture()
+    const report = await reportInput(productRoot, repoRoot, [completeCase({
+      metrics: { cacheReadTokens: 0, inputTokens: 0, outputTokens: 0, turnReason: 'completed' },
+    })])
+    expect(report.cases).toMatchObject([{ accepted: false, billing: { tokensVerified: false } }])
+    expect(report.acceptance).toMatchObject({ failures: expect.arrayContaining(['case_failure']), passed: false })
   })
 
   it('零测试不得伪绿', async () => {
@@ -253,12 +317,11 @@ describe('M3 + DSH 评测证据报告', () => {
   it('passed true 不能绕过 observability gap，且三类失败互斥', () => {
     const model = completeCase({ passed: false, verification: { passed: false } })
     const infrastructure = completeCase({ passed: false, timedOut: true })
-    const harness = completeCase({ billing: undefined, passed: true })
-    const trust = { billing: true, identity: true }
-    expect(classifyFailure(model, trust)).toEqual({ category: 'model_failure', reason: 'external_verifier_rejected' })
-    expect(classifyFailure(infrastructure, trust)).toEqual({ category: 'infrastructure_failure', reason: 'timeout' })
-    expect(classifyFailure(harness, trust)).toEqual({ category: 'harness_failure', reason: 'observability_gap' })
-    expect(classifyFailure(completeCase(), trust)).toEqual({ category: null, reason: null })
+    const harness = completeCase({ runtimeEvidence: { agentIdleObserved: true, providerResponses: [], sessionFlushObserved: true } })
+    expect(classifyFailure(model)).toEqual({ category: 'model_failure', reason: 'external_verifier_rejected' })
+    expect(classifyFailure(infrastructure)).toEqual({ category: 'infrastructure_failure', reason: 'timeout' })
+    expect(classifyFailure(harness)).toEqual({ category: 'harness_failure', reason: 'observability_gap' })
+    expect(classifyFailure(completeCase())).toEqual({ category: null, reason: null })
   })
 
   it.each([
@@ -310,7 +373,8 @@ describe('M3 + DSH 评测证据报告', () => {
     expect(parseEvaluationReport({
       acceptance: { failures: ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete', 'zero_cases'], passed: false },
       cases: [], implementation: { entry: 'standard', files: [], runtime: { endpoint: { sha256: 'endpoint' }, parametersSha256: 'parameters' }, sha256: 'hash' },
-      modelIdentity: { server: { status: 'unknown_unverified' } }, passed: false, reportVersion: 2, runId: 'run-1',
+      modelIdentity: { server: { deployment: null, model: null, provider: null, source: null, status: 'unknown_unverified' } },
+      passed: false, reportVersion: 2, runId: 'run-1',
       source: { gitHead: 'head', worktree: { trackedDirty: false, untrackedPresent: false } },
     }).reportVersion).toBe(2)
     expect(() => parseEvaluationReport({ cases: [], reportVersion: 2 })).toThrow('schema')

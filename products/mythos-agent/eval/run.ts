@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { selectEvaluationSuite, type EvaluationCase, type VerificationResult } from './cases.js'
 import { parseEvaluationModel, parseEvaluationTimeoutMs, parseReplayMetadata } from './options.js'
 import { buildEvaluationReport } from './report-contract.js'
+import { readObservedProviderEvidence, type CaseRuntimeEvidence, type ProviderResponseObservation } from './runtime-evidence.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
 
 interface CaseResult {
@@ -20,6 +21,7 @@ interface CaseResult {
   passed: boolean
   processExitCode: number
   rawSession?: string
+  runtimeEvidence: CaseRuntimeEvidence
   timedOut: boolean
   tier: EvaluationCase['tier']
   verification: VerificationResult
@@ -64,6 +66,7 @@ const repoRoot = resolve(productRoot, '..', '..')
 const dshHome = join(productRoot, 'home')
 const sessionsRoot = join(dshHome, 'sessions')
 const cliPath = join(repoRoot, 'apps', 'cli', 'lib', 'bin.js')
+const runtimeEvidenceOverlay = join(productRoot, 'eval', 'overlays', 'runtime-evidence.yml')
 const evalPatch = process.env.MYTHOS_EVAL_PATCH
   ? resolve(process.env.MYTHOS_EVAL_PATCH)
   : undefined
@@ -116,12 +119,15 @@ async function collectSessionFiles(root: string): Promise<Set<string>> {
 async function runProcess(
   testCase: EvaluationCase,
   cwd: string,
-): Promise<{ exitCode: number, timedOut: boolean }> {
-  return await new Promise((resolvePromise, reject) => {
+): Promise<{ exitCode: number, providerResponses: ProviderResponseObservation[], timedOut: boolean }> {
+  const evidencePath = join(tmpdir(), `mythos-runtime-evidence-${randomUUID()}.ndjson`)
+  const result = await new Promise<{ exitCode: number, timedOut: boolean }>((resolvePromise, reject) => {
     const args = [
       cliPath,
       '--profile',
       'mythos',
+      '--patch',
+      runtimeEvidenceOverlay,
       ...(evalPatch ? ['--patch', evalPatch] : []),
       testCase.prompt,
     ]
@@ -130,6 +136,7 @@ async function runProcess(
       env: {
         ...process.env,
         DSH_HOME: dshHome,
+        MYTHOS_RUNTIME_EVIDENCE_PATH: evidencePath,
       },
       stdio: 'inherit',
     })
@@ -154,6 +161,7 @@ async function runProcess(
       resolvePromise({ exitCode: code ?? 1, timedOut })
     })
   })
+  return { ...result, providerResponses: await readObservedProviderEvidence(evidencePath) }
 }
 
 function failedVerification(reason: string): VerificationResult {
@@ -184,12 +192,14 @@ async function runCase(testCase: EvaluationCase): Promise<CaseResult> {
   let processExitCode = 1
   let timedOut = false
   let verification = failedVerification('Agent 进程未完成')
+  let providerResponses: ProviderResponseObservation[] = []
 
   try {
     await testCase.setup(workspace)
     const processResult = await runProcess(testCase, workspace)
     processExitCode = processResult.exitCode
     timedOut = processResult.timedOut
+    providerResponses = processResult.providerResponses
     verification = timedOut
       ? failedVerification(`Agent 执行超过 ${evaluationTimeoutMs}ms`)
       : processExitCode === 0
@@ -230,6 +240,11 @@ async function runCase(testCase: EvaluationCase): Promise<CaseResult> {
     passed: processExitCode === 0 && verification.passed && behaviorVerification.passed,
     processExitCode,
     rawSession: rawSession ? relative(productRoot, rawSession) : undefined,
+    runtimeEvidence: {
+      agentIdleObserved: metrics?.agentIdleObserved === true,
+      providerResponses,
+      sessionFlushObserved: metrics?.sessionFlushObserved === true,
+    },
     timedOut,
     tier: testCase.tier,
     verification,
@@ -313,7 +328,8 @@ async function main(): Promise<void> {
       variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
     draft,
     entry: process.env.MYTHOS_EVAL_ENTRY === 'qwen-local' ? 'qwen-local' : 'standard',
-    overlays: evalPatch ? [relative(productRoot, evalPatch)] : [],
+    entryId: process.env.MYTHOS_EVAL_ENTRY_ID as never,
+    overlays: [relative(productRoot, runtimeEvidenceOverlay), ...(evalPatch ? [relative(productRoot, evalPatch)] : [])],
     productRoot,
     repoRoot,
     requestedModel: evaluationModel,

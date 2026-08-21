@@ -51,6 +51,7 @@ describe('parseSessionJsonl', () => {
     ].join('\n')
 
     expect(parseSessionJsonl(jsonl)).toEqual({
+      agentIdleObserved: false,
       cacheReadTokens: 3,
       compactionSummaries: 0,
       evidenceAfterMutation: true,
@@ -61,11 +62,13 @@ describe('parseSessionJsonl', () => {
       maxSubagentCallsPerStep: 0,
       outputTokens: 20,
       resumeBoundaries: 0,
+      sessionFlushObserved: false,
       steps: 1,
       toolCalls: { bash: 1, read: 1, write: 1 },
       toolResults: 1,
       turnReason: 'completed',
       turns: 0,
+      usageObserved: true,
     })
   })
 

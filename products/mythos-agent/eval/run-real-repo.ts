@@ -8,6 +8,7 @@ import { realRepoCases, installFutureTest } from './real-repo-cases.js'
 import { realRepoConfigurationSha256 } from './real-repo-configuration.js'
 import { readCompressedSessionMetrics } from './session-metrics.js'
 import { buildEvaluationReport } from './report-contract.js'
+import { readObservedProviderEvidence, type ProviderResponseObservation } from './runtime-evidence.js'
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(productRoot, '..', '..')
@@ -17,6 +18,7 @@ const cliPath = join(repoRoot, 'apps', 'cli', 'lib', 'bin.js')
 const vitestPath = join(repoRoot, 'node_modules', 'vitest', 'vitest.mjs')
 const timeoutMs = Number(process.env.MYTHOS_REAL_REPO_TIMEOUT_MS ?? 900_000)
 const evalPatch = process.env.MYTHOS_REAL_REPO_PATCH ? resolve(process.env.MYTHOS_REAL_REPO_PATCH) : undefined
+const runtimeEvidenceOverlay = join(productRoot, 'eval', 'overlays', 'runtime-evidence.yml')
 
 async function run(command: string, args: string[], cwd: string, inherit = false): Promise<number> {
   return await new Promise((done, reject) => {
@@ -79,16 +81,21 @@ async function sessions(): Promise<Set<string>> {
   return result
 }
 
-async function runAgent(workspace: string, prompt: string): Promise<{ exitCode: number; timedOut: boolean }> {
-  return await new Promise((done, reject) => {
-    const child = spawn(process.execPath, [cliPath, '--profile', 'mythos', ...(evalPatch ? ['--patch', evalPatch] : []), prompt], {
-      cwd: workspace, env: { ...process.env, DSH_HOME: dshHome }, stdio: 'inherit',
+async function runAgent(workspace: string, prompt: string): Promise<{
+  exitCode: number; providerResponses: ProviderResponseObservation[]; timedOut: boolean
+}> {
+  const evidencePath = join(tmpdir(), `mythos-runtime-evidence-${randomUUID()}.ndjson`)
+  const result = await new Promise<{ exitCode: number; timedOut: boolean }>((done, reject) => {
+    const child = spawn(process.execPath, [cliPath, '--profile', 'mythos', '--patch', runtimeEvidenceOverlay,
+      ...(evalPatch ? ['--patch', evalPatch] : []), prompt], {
+      cwd: workspace, env: { ...process.env, DSH_HOME: dshHome, MYTHOS_RUNTIME_EVIDENCE_PATH: evidencePath }, stdio: 'inherit',
     })
     let timedOut = false
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM') }, timeoutMs)
     child.once('error', reject)
     child.once('exit', code => { clearTimeout(timer); done({ exitCode: code ?? 1, timedOut }) })
   })
+  return { ...result, providerResponses: await readObservedProviderEvidence(evidencePath) }
 }
 
 if (!process.env.DEEPSEEK_API_KEY || !process.env.DEEPSEEK_BASE_URL) throw new Error('缺少 M3 API 环境变量')
@@ -102,7 +109,8 @@ for (const testCase of chosen) {
   const beforeSessions = await sessions()
   const workspace = await mkdtemp(join(tmpdir(), `mythos-real-${testCase.id}-`))
   const started = performance.now()
-  let processResult = { exitCode: 1, timedOut: false }
+  let processResult: { exitCode: number; providerResponses: ProviderResponseObservation[]; timedOut: boolean }
+    = { exitCode: 1, providerResponses: [], timedOut: false }
   let verification = { evidence: {}, passed: false, reason: '真实仓库任务未完成' }
   try {
     await extractRevision(testCase.parentRevision, workspace)
@@ -125,7 +133,10 @@ for (const testCase of chosen) {
     dimensions: testCase.dimensions, durationMs: Math.round(performance.now() - started), id: testCase.id, metrics,
     ...(metrics ? { metricsSource: 'dsh_session_log' as const } : {}),
     passed: verification.passed && behaviorPassed, processExitCode: processResult.exitCode,
-    rawSession: raw ? relative(productRoot, raw) : undefined, tier: 'real-repository', timedOut: processResult.timedOut, verification })
+    rawSession: raw ? relative(productRoot, raw) : undefined,
+    runtimeEvidence: { agentIdleObserved: metrics?.agentIdleObserved === true,
+      providerResponses: processResult.providerResponses, sessionFlushObserved: metrics?.sessionFlushObserved === true },
+    tier: 'real-repository', timedOut: processResult.timedOut, verification })
 }
 const dsh = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')) as { version: string }
 const mythos = JSON.parse(await readFile(join(productRoot, 'package.json'), 'utf8')) as { version: string }
@@ -140,7 +151,8 @@ const report = await buildEvaluationReport({
     profile: 'mythos', suite: 'real-repository', timeoutMs, variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
   draft,
   entry: 'real-repository',
-  overlays: evalPatch ? [relative(productRoot, evalPatch)] : [],
+  entryId: process.env.MYTHOS_EVAL_ENTRY_ID as never,
+  overlays: [relative(productRoot, runtimeEvidenceOverlay), ...(evalPatch ? [relative(productRoot, evalPatch)] : [])],
   productRoot,
   repoRoot,
   requestedModel: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',

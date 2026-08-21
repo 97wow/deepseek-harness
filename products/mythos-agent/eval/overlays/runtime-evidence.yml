@@ -1,0 +1,3 @@
+- insert:
+    - id: mythos-runtime-evidence-observer
+      name: '../../../eval/runtime-evidence-observer.ts'

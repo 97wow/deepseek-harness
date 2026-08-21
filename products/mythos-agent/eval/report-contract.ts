@@ -16,6 +16,7 @@ import {
   verifyExecutionArtifact,
   type ExecutionArtifactCommitment,
 } from './execution-snapshot.js'
+import { aggregateProviderEvidence, type CaseRuntimeEvidence } from './runtime-evidence.js'
 
 export type { EvaluationEntry, EvaluationEntryId } from './entry-registry.js'
 
@@ -25,6 +26,7 @@ const safeSessionPath = /^home\/sessions\/[a-zA-Z0-9._/-]+\.zstd$/u
 const knownOverlays = new Set([
   'eval/overlays/journey-compaction.yml', 'eval/overlays/journey-subagent.yml', 'eval/overlays/journey.yml',
   'eval/overlays/qwen-local.yml', 'eval/overlays/reasoning-high.yml', 'eval/overlays/real-repo-scope-guard.yml',
+  'eval/overlays/runtime-evidence.yml', 'eval/overlays/m3-smoke.yml',
 ])
 const knownTurnReasons = new Set(['aborted', 'blocked', 'completed', 'error', 'interrupted', 'max-tokens'])
 const supportedCurrencies = new Set(['USD'])
@@ -32,6 +34,7 @@ const supportedCurrencies = new Set(['USD'])
 export type FailureCategory = 'model_failure' | 'harness_failure' | 'infrastructure_failure'
 
 export interface ReportCase {
+  /** Legacy/untrusted labels are retained only so old callers fail closed. */
   agentIdleObserved?: boolean
   billing?: unknown
   dimensions?: readonly string[]
@@ -44,6 +47,7 @@ export interface ReportCase {
   processExitCode?: number
   rawSession?: string
   relatedRawSessions?: readonly string[]
+  runtimeEvidence?: CaseRuntimeEvidence
   sessionFlushObserved?: boolean
   timedOut?: boolean
   tier?: string
@@ -119,6 +123,7 @@ function projectMetrics(value: unknown): Record<string, unknown> | null {
     if (number !== null) projected[key] = number
   }
   if (typeof metrics.evidenceAfterMutation === 'boolean') projected.evidenceAfterMutation = metrics.evidenceAfterMutation
+  if (typeof metrics.usageObserved === 'boolean') projected.usageObserved = metrics.usageObserved
   const turnReason = safeTurnReason(metrics.turnReason)
   if (turnReason !== null) projected.turnReason = turnReason
   return projected
@@ -219,7 +224,8 @@ export async function evaluationCommitment(input: {
     throw new Error('实际执行 entry 与报告 commitment 不一致')
   }
   const caseIds = Array.isArray(parameters.caseIds)
-    ? parameters.caseIds.filter((value): value is string => typeof value === 'string') : []
+    ? parameters.caseIds.filter((value): value is string => typeof value === 'string')
+    : [...registryEntry.fixedCaseIds ?? []]
   const invocationParameters = Array.isArray(observedInvocation)
     && observedInvocation.every(value => typeof value === 'string')
     ? observedInvocation.slice(1) as string[]
@@ -233,7 +239,8 @@ export async function evaluationCommitment(input: {
   const entrySummary = {
     command, commitment: registryEntry.commitment, entryId, environment,
     internalDependencies: registryEntry.internalDependencies,
-    parameters: { caseIds: registryEntry.parameters.caseIds, options: [...registryEntry.parameters.options] },
+    parameters: { caseIds: registryEntry.parameters.caseIds, fixedCaseIds: registryEntry.fixedCaseIds ?? null,
+      options: [...registryEntry.parameters.options] }, smokePolicy: registryEntry.smokePolicy ?? null,
     visibility: registryEntry.visibility,
   }
   const runtime = {
@@ -289,7 +296,8 @@ export function validateTokens(metrics: unknown, source: unknown): {
 } {
   const value = record(metrics)
   const tokens = { cache: nonNegativeInteger(value.cacheReadTokens), input: nonNegativeInteger(value.inputTokens), output: nonNegativeInteger(value.outputTokens) }
-  return { ...tokens, verified: source === 'dsh_session_log' && Object.values(tokens).every(token => token !== null) }
+  return { ...tokens, verified: source === 'dsh_session_log' && value.usageObserved === true
+    && Object.values(tokens).every(token => token !== null) }
 }
 
 export function validateBilling(value: unknown, trustedSource = false): {
@@ -304,15 +312,17 @@ export function validateBilling(value: unknown, trustedSource = false): {
 }
 
 function completionComplete(testCase: ReportCase): boolean {
-  return testCase.agentIdleObserved === true && testCase.sessionFlushObserved === true
+  return testCase.runtimeEvidence?.agentIdleObserved === true && testCase.runtimeEvidence.sessionFlushObserved === true
     && typeof testCase.verification?.passed === 'boolean' && safeTurnReason(record(testCase.metrics).turnReason) !== null
 }
 
-export function classifyFailure(testCase: ReportCase, trust: { billing: boolean; identity: boolean } = { billing: false, identity: false }): {
+export function classifyFailure(testCase: ReportCase): {
   category: FailureCategory | null; reason: string | null
 } {
+  const observed = aggregateProviderEvidence(testCase.runtimeEvidence?.providerResponses ?? [])
   if (!testCase.metrics || testCase.metricsError || !validateTokens(testCase.metrics, testCase.metricsSource).verified
-    || !validateBilling(testCase.billing, trust.billing).verified || !completionComplete(testCase) || !trust.identity) {
+    || !validateBilling(observed.billing === null ? null : { ...observed.billing, verified: true }, observed.billing !== null).verified
+    || !completionComplete(testCase) || observed.identity === null) {
     return { category: 'harness_failure', reason: 'observability_gap' }
   }
   if (testCase.timedOut || (testCase.processExitCode ?? 0) !== 0) {
@@ -325,15 +335,16 @@ export function classifyFailure(testCase: ReportCase, trust: { billing: boolean;
 function projectCase(testCase: ReportCase): Record<string, unknown> {
   const metrics = projectMetrics(testCase.metrics)
   const tokens = validateTokens(testCase.metrics, testCase.metricsSource)
-  const billing = validateBilling(testCase.billing)
+  const observed = aggregateProviderEvidence(testCase.runtimeEvidence?.providerResponses ?? [])
+  const billing = validateBilling(observed.billing === null ? null : { ...observed.billing, verified: true }, observed.billing !== null)
   const rawSession = typeof testCase.rawSession === 'string' && safeSessionPath.test(testCase.rawSession) ? testCase.rawSession : undefined
   const relatedRawSessions = testCase.relatedRawSessions?.filter(path => safeSessionPath.test(path))
   const raw = {
     billing: { ...billing, tokens: { cache: tokens.cache, input: tokens.input, output: tokens.output }, tokensVerified: tokens.verified },
     completionEvidence: {
-      agentIdle: { status: testCase.agentIdleObserved === true ? 'observed' : 'unknown_unverified', value: testCase.agentIdleObserved === true ? true : null },
+      agentIdle: { status: testCase.runtimeEvidence?.agentIdleObserved === true ? 'observed' : 'unknown_unverified', value: testCase.runtimeEvidence?.agentIdleObserved === true ? true : null },
       externalVerifier: { status: typeof testCase.verification?.passed === 'boolean' ? 'observed' : 'unknown_unverified', value: testCase.verification?.passed ?? null },
-      sessionFlush: { status: testCase.sessionFlushObserved === true ? 'observed' : 'unknown_unverified', value: testCase.sessionFlushObserved === true ? true : null },
+      sessionFlush: { status: testCase.runtimeEvidence?.sessionFlushObserved === true ? 'observed' : 'unknown_unverified', value: testCase.runtimeEvidence?.sessionFlushObserved === true ? true : null },
       turnReason: metrics?.turnReason ? { status: 'observed', value: metrics.turnReason } : { status: 'unknown_unverified', value: null },
     },
     durationMs: nonNegativeInteger(testCase.durationMs),
@@ -346,22 +357,49 @@ function projectCase(testCase: ReportCase): Record<string, unknown> {
   return { ...raw, ...authoritativeCaseSemantics(raw) }
 }
 
-export function authoritativeCaseSemantics(_testCase: Record<string, unknown>): {
-  accepted: false
-  capabilityEligible: false
-  failure: { category: 'harness_failure'; reason: 'observability_gap' }
+export function authoritativeCaseSemantics(testCase: Record<string, unknown>): {
+  accepted: boolean
+  capabilityEligible: boolean
+  failure: { category: FailureCategory | null; reason: string | null }
 } {
-  return { accepted: false, capabilityEligible: false, failure: { category: 'harness_failure', reason: 'observability_gap' } }
+  const billing = record(testCase.billing)
+  const completion = record(testCase.completionEvidence)
+  const complete = billing.verified === true && billing.tokensVerified === true
+    && record(completion.agentIdle).status === 'observed' && record(completion.agentIdle).value === true
+    && record(completion.sessionFlush).status === 'observed' && record(completion.sessionFlush).value === true
+    && record(completion.turnReason).status === 'observed'
+      && safeTurnReason(record(completion.turnReason).value) !== null
+    && record(completion.externalVerifier).status === 'observed'
+      && typeof record(completion.externalVerifier).value === 'boolean'
+  if (!complete) return { accepted: false, capabilityEligible: false,
+    failure: { category: 'harness_failure', reason: 'observability_gap' } }
+  if (testCase.timedOut === true || (testCase.processExitCode ?? 0) !== 0) {
+    return { accepted: false, capabilityEligible: false,
+      failure: { category: 'infrastructure_failure', reason: testCase.timedOut === true ? 'timeout' : 'runner_process_failure' } }
+  }
+  if (record(testCase.verification).passed === false || testCase.passed !== true) {
+    return { accepted: false, capabilityEligible: true,
+      failure: { category: 'model_failure', reason: 'external_verifier_rejected' } }
+  }
+  return { accepted: true, capabilityEligible: true, failure: { category: null, reason: null } }
 }
 
 function authoritativeReportFailures(
   cases: readonly Record<string, unknown>[],
   source: Record<string, unknown>,
   implementation: Record<string, unknown> = {},
+  serverIdentity: Record<string, unknown> = {},
 ): string[] {
-  const failures = ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete']
+  const failures: string[] = []
+  if (serverIdentity.status !== 'observed') failures.push('server_identity_unverified')
+  if (cases.length === 0 || cases.some(testCase => record(testCase.billing).verified !== true)) failures.push('billing_unverified')
+  if (cases.length === 0 || cases.some(testCase => {
+    const completion = record(testCase.completionEvidence)
+    return ['agentIdle', 'externalVerifier', 'sessionFlush', 'turnReason']
+      .some(key => record(completion[key]).status !== 'observed')
+  })) failures.push('completion_evidence_incomplete')
   if (cases.length === 0) failures.push('zero_cases')
-  if (cases.some(testCase => testCase.passed !== true)) failures.push('case_failure')
+  if (cases.some(testCase => testCase.passed !== true || testCase.accepted !== true)) failures.push('case_failure')
   const worktree = record(source.worktree)
   if (worktree.trackedDirty === true) failures.push('tracked_source_dirty')
   if (worktree.untrackedPresent === true) failures.push('untracked_source_present')
@@ -394,6 +432,7 @@ export async function buildEvaluationReport(input: {
   config: Readonly<Record<string, unknown>>
   draft: object
   entry: EvaluationEntry
+  entryId?: EvaluationEntryId
   overlays?: readonly string[]
   productRoot: string
   repoRoot: string
@@ -404,15 +443,22 @@ export async function buildEvaluationReport(input: {
   const [source, implementation] = await Promise.all([
     sourceEvidence(input.repoRoot),
     evaluationCommitment({ config: { ...input.config, requestedModel: input.requestedModel, requestedProvider: input.requestedProvider },
-      entry: input.entry, overlays: input.overlays, productRoot: input.productRoot }),
+      entry: input.entry, entryId: input.entryId, overlays: input.overlays, productRoot: input.productRoot }),
   ])
   const cases = input.cases.map(projectCase)
-  const failures = authoritativeReportFailures(cases, source, implementation)
+  const identities = input.cases.map(testCase => aggregateProviderEvidence(testCase.runtimeEvidence?.providerResponses ?? []).identity)
+  const firstIdentity = identities[0]
+  const serverIdentity = identities.length > 0 && firstIdentity !== null
+    && identities.every(identity => identity !== null && canonical(identity) === canonical(firstIdentity))
+    ? { ...firstIdentity, source: 'm3_provider_response', status: 'observed' }
+    : { deployment: null, model: null, provider: null, source: null, status: 'unknown_unverified' }
+  const failures = authoritativeReportFailures(cases, source, implementation, serverIdentity)
+  const accepted = failures.length === 0
   return {
-    ...projectDraft(input.draft), acceptance: { failures, passed: false }, cases, implementation,
+    ...projectDraft(input.draft), acceptance: { failures, passed: accepted }, cases, implementation,
     modelIdentity: { requested: { model: safeString(input.requestedModel), provider: safeString(input.requestedProvider) },
-      server: { deployment: null, model: null, provider: null, status: 'unknown_unverified' } },
-    passed: false, reportVersion: 2,
+      server: serverIdentity },
+    passed: accepted, reportVersion: 2,
     source: { ...source, dsh: { declaredCommit: safeString(manifest.mythos?.dshCommit), declaredVersion: safeString(manifest.mythos?.dshVersion) },
       productVersion: safeString(manifest.version) },
   }
@@ -447,24 +493,40 @@ export function parseEvaluationReport(value: unknown): Record<string, unknown> {
       const billing = record(testCase.billing)
       const completion = record(testCase.completionEvidence)
       const tokenValues = record(billing.tokens)
+      const expectedBilling = validateBilling(billing, true)
       const expectedTokensVerified = testCase.observationSource === 'dsh_session_log'
+        && record(testCase.metrics).usageObserved === true
         && [tokenValues.cache, tokenValues.input, tokenValues.output].every(value => nonNegativeInteger(value) !== null)
       if (!hasOnlyKeys(testCase, ['accepted', 'billing', 'capabilityEligible', 'completionEvidence', 'durationMs', 'failure', 'id', 'metrics',
         'observationSource', 'passed', 'processExitCode', 'rawSession', 'relatedRawSessions', 'tier', 'timedOut', 'verification'])
         || typeof testCase.id !== 'string' || typeof testCase.passed !== 'boolean' || typeof testCase.accepted !== 'boolean'
         || !['model_failure', 'harness_failure', 'infrastructure_failure', null].includes(failure.category as never)
-        || billing.verified !== false || billing.tokensVerified !== expectedTokensVerified
+        || billing.amount !== expectedBilling.amount || billing.currency !== expectedBilling.currency
+        || billing.source !== expectedBilling.source || billing.verified !== expectedBilling.verified
+        || billing.tokensVerified !== expectedTokensVerified
         || typeof completion.turnReason !== 'object'
-        || record(completion.agentIdle).status !== 'unknown_unverified'
-        || record(completion.sessionFlush).status !== 'unknown_unverified') {
+        || !['observed', 'unknown_unverified'].includes(String(record(completion.agentIdle).status))
+        || !['observed', 'unknown_unverified'].includes(String(record(completion.sessionFlush).status))) {
         throw new Error('v2 评测报告 case schema 无效')
       }
       const expected = authoritativeCaseSemantics(testCase)
       if (testCase.accepted !== expected.accepted || testCase.capabilityEligible !== expected.capabilityEligible
         || canonical(testCase.failure) !== canonical(expected.failure)) throw new Error('v2 评测报告 case 派生语义不一致')
     }
-    const expectedFailures = authoritativeReportFailures(report.cases.map(record), source, implementation)
-    if (record(identity.server).status !== 'unknown_unverified' || acceptance.passed !== false || report.passed !== false
+    const serverIdentity = record(identity.server)
+    if (serverIdentity.status === 'observed'
+      && (serverIdentity.source !== 'm3_provider_response'
+        || [serverIdentity.deployment, serverIdentity.model, serverIdentity.provider].some(value => safeString(value) === null))) {
+      throw new Error('v2 评测报告服务端身份 schema 无效')
+    }
+    if (serverIdentity.status !== 'observed' && (serverIdentity.status !== 'unknown_unverified'
+      || serverIdentity.source !== null
+      || [serverIdentity.deployment, serverIdentity.model, serverIdentity.provider].some(value => value !== null))) {
+      throw new Error('v2 评测报告服务端身份 schema 无效')
+    }
+    const expectedFailures = authoritativeReportFailures(report.cases.map(record), source, implementation, serverIdentity)
+    const expectedPassed = expectedFailures.length === 0
+    if (acceptance.passed !== expectedPassed || report.passed !== expectedPassed
       || canonical(acceptance.failures) !== canonical(expectedFailures)) throw new Error('v2 评测报告 acceptance 派生语义不一致')
   }
   return report

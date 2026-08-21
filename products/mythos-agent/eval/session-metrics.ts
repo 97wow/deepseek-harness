@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 
 export interface SessionMetrics {
+  agentIdleObserved: boolean
   cacheReadTokens: number
   compactionSummaries: number
   evidenceAfterMutation: boolean
@@ -16,6 +17,8 @@ export interface SessionMetrics {
   toolResults: number
   turns: number
   turnReason?: string
+  sessionFlushObserved: boolean
+  usageObserved: boolean
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -41,6 +44,7 @@ function containsObservedFailure(value: unknown): boolean {
 
 export function parseSessionJsonl(jsonl: string): SessionMetrics {
   const metrics: SessionMetrics = {
+    agentIdleObserved: false,
     cacheReadTokens: 0,
     compactionSummaries: 0,
     evidenceAfterMutation: false,
@@ -55,6 +59,8 @@ export function parseSessionJsonl(jsonl: string): SessionMetrics {
     toolCalls: {},
     toolResults: 0,
     turns: 0,
+    sessionFlushObserved: false,
+    usageObserved: false,
   }
 
   let subagentCallsInStep = 0
@@ -84,6 +90,8 @@ export function parseSessionJsonl(jsonl: string): SessionMetrics {
     }
 
     if (type === 'turn/start') {
+      metrics.agentIdleObserved = false
+      delete metrics.turnReason
       metrics.turns += 1
       continue
     }
@@ -102,9 +110,16 @@ export function parseSessionJsonl(jsonl: string): SessionMetrics {
       const chunk = asRecord(data?.chunk)
       if (chunk?.type !== 'usage') continue
       const usage = asRecord(chunk.usage)
+      if (typeof usage?.inputTokens !== 'number' || !Number.isSafeInteger(usage.inputTokens) || usage.inputTokens < 0
+        || typeof usage.outputTokens !== 'number' || !Number.isSafeInteger(usage.outputTokens) || usage.outputTokens < 0
+        || (usage.cacheReadTokens !== undefined
+          && (typeof usage.cacheReadTokens !== 'number' || !Number.isSafeInteger(usage.cacheReadTokens) || usage.cacheReadTokens < 0))) {
+        continue
+      }
       metrics.inputTokens += asFiniteNumber(usage?.inputTokens)
       metrics.outputTokens += asFiniteNumber(usage?.outputTokens)
       metrics.cacheReadTokens += asFiniteNumber(usage?.cacheReadTokens)
+      metrics.usageObserved = true
       continue
     }
 
@@ -162,5 +177,6 @@ export function readCompressedSessionMetrics(
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   })
-  return parseSessionJsonl(jsonl)
+  const metrics = parseSessionJsonl(jsonl)
+  return { ...metrics, agentIdleObserved: metrics.turnReason !== undefined, sessionFlushObserved: true }
 }

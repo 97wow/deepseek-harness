@@ -8,6 +8,7 @@ import { advancedJourneyCases } from './advanced-journeys.js'
 import { advancedJourneyConfigurationSha256 } from './advanced-journey-configuration.js'
 import { readCompressedSessionMetrics } from './session-metrics.js'
 import { buildEvaluationReport } from './report-contract.js'
+import { readObservedProviderEvidence } from './runtime-evidence.js'
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(productRoot, '..', '..')
@@ -15,6 +16,7 @@ const dshHome = join(productRoot, 'home')
 const sessionsRoot = join(dshHome, 'sessions')
 const cliPath = join(repoRoot, 'apps', 'cli', 'lib', 'bin.js')
 const baseOverlay = join(productRoot, 'eval', 'overlays', 'journey.yml')
+const runtimeEvidenceOverlay = join(productRoot, 'eval', 'overlays', 'runtime-evidence.yml')
 const timeoutMs = Number(process.env.MYTHOS_JOURNEY_TIMEOUT_MS ?? 900_000)
 const selected = process.env.MYTHOS_ADVANCED_JOURNEY_CASE
 
@@ -36,12 +38,16 @@ async function sessionPaths(): Promise<string[]> {
 async function runTurn(workspace: string, sessionId: string, prompt: string, action: 'create' | 'resume', overlay: string) {
   const started = performance.now()
   const promptFile = join(tmpdir(), `mythos-advanced-prompt-${randomUUID()}`)
+  const evidencePath = join(tmpdir(), `mythos-runtime-evidence-${randomUUID()}.ndjson`)
   await writeFile(promptFile, prompt, { mode: 0o600 })
   try {
-    return await new Promise<{ durationMs: number; exitCode: number; timedOut: boolean }>((done, reject) => {
-      const child = spawn(process.execPath, [cliPath, '--profile', 'mythos', '--patch', baseOverlay, '--patch', overlay, 'journey'], {
+    const result = await new Promise<{ durationMs: number; exitCode: number; timedOut: boolean }>((done, reject) => {
+      const child = spawn(process.execPath, [cliPath, '--profile', 'mythos', '--patch', runtimeEvidenceOverlay,
+        '--patch', baseOverlay, '--patch', overlay, 'journey'], {
         cwd: workspace,
-        env: { ...process.env, DSH_HOME: dshHome, MYTHOS_JOURNEY_ACTION: action, MYTHOS_JOURNEY_PROMPT_FILE: promptFile, MYTHOS_JOURNEY_SESSION_ID: sessionId },
+        env: { ...process.env, DSH_HOME: dshHome, MYTHOS_JOURNEY_ACTION: action,
+          MYTHOS_JOURNEY_PROMPT_FILE: promptFile, MYTHOS_JOURNEY_SESSION_ID: sessionId,
+          MYTHOS_RUNTIME_EVIDENCE_PATH: evidencePath },
         stdio: 'inherit',
       })
       let timedOut = false
@@ -49,6 +55,7 @@ async function runTurn(workspace: string, sessionId: string, prompt: string, act
       child.once('error', reject)
       child.once('exit', code => { clearTimeout(timer); done({ durationMs: Math.round(performance.now() - started), exitCode: code ?? 1, timedOut }) })
     })
+    return { ...result, providerResponses: await readObservedProviderEvidence(evidencePath) }
   } finally { await rm(promptFile, { force: true }) }
 }
 
@@ -103,6 +110,9 @@ for (const testCase of chosenCases) {
     passed: processPassed && verification.passed && behaviorPassed,
     processExitCode: processPassed ? 0 : 1,
     rawSession: raw ? relative(productRoot, raw) : undefined,
+    runtimeEvidence: { agentIdleObserved: metrics?.agentIdleObserved === true,
+      providerResponses: stages.flatMap(stage => stage.providerResponses),
+      sessionFlushObserved: metrics?.sessionFlushObserved === true },
     relatedRawSessions: related.map(path => relative(productRoot, path)),
     stages,
     tier: 'advanced-journey',
@@ -118,7 +128,8 @@ const draft = {
   cases, completedAt: new Date().toISOString(), model: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',
   passed: cases.every(testCase => testCase.passed), profile: 'mythos', reportVersion: 1, runId: randomUUID(), startedAt,
 }
-const advancedOverlays = [...new Set(chosenCases.map(testCase => `eval/overlays/journey-${testCase.overlay}.yml`))]
+const advancedOverlays = [relative(productRoot, runtimeEvidenceOverlay), 'eval/overlays/journey.yml',
+  ...new Set(chosenCases.map(testCase => `eval/overlays/journey-${testCase.overlay}.yml`))]
 const report = await buildEvaluationReport({
   cases,
   config: { caseIds: chosenCases.map(testCase => testCase.id), endpoint: process.env.DEEPSEEK_BASE_URL,
@@ -126,6 +137,7 @@ const report = await buildEvaluationReport({
     repetitions: process.env.MYTHOS_EVAL_REPLAY_TOTAL ?? null, suite: 'advanced-journey', timeoutMs, variant: 'default' },
   draft,
   entry: 'advanced-journey',
+  entryId: process.env.MYTHOS_EVAL_ENTRY_ID as never,
   overlays: advancedOverlays,
   productRoot,
   repoRoot,
