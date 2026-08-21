@@ -13,7 +13,9 @@
   },
   "scripts": {
     "agent": "tsx product/launch.ts headless",
+    "bench:qwen-local": "tsx eval/qwen-local-benchmark.ts",
     "eval": "tsx eval/run.ts",
+    "eval:qwen-local": "tsx eval/run-qwen-local.ts",
     "eval:repeat": "tsx eval/repeat.ts",
     "flywheel:analyze": "tsx flywheel/analyze.ts",
     "flywheel:build": "tsx flywheel/build.ts",
@@ -27,7 +29,7 @@
     "release:verify": "tsx release/verify.ts",
     "smoke:web": "tsx product/smoke-web.ts",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts",
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/run-qwen-local.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts",
     "web": "tsx product/launch.ts web"
   },
   "dependencies": {

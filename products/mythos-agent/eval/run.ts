@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { selectEvaluationCases, type EvaluationCase, type VerificationResult } from './cases.js'
-import { parseEvaluationTimeoutMs, parseReplayMetadata } from './options.js'
+import { parseEvaluationModel, parseEvaluationTimeoutMs, parseReplayMetadata } from './options.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
 
 interface CaseResult {
@@ -61,6 +61,7 @@ const evalPatch = process.env.MYTHOS_EVAL_PATCH
   ? resolve(process.env.MYTHOS_EVAL_PATCH)
   : undefined
 const evaluationTimeoutMs = parseEvaluationTimeoutMs(process.env.MYTHOS_EVAL_TIMEOUT_MS)
+const evaluationModel = parseEvaluationModel(process.env.MYTHOS_EVAL_MODEL)
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
@@ -271,7 +272,7 @@ async function main(): Promise<void> {
     },
     cases: results,
     completedAt: new Date().toISOString(),
-    model: 'deepseek-v4-flash',
+    model: evaluationModel,
     passed: results.every(result => result.passed),
     profile: 'mythos',
     reportVersion: 1,

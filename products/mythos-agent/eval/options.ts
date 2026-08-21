@@ -1,5 +1,10 @@
 export const DEFAULT_EVALUATION_TIMEOUT_MS = 300_000
 export const DEFAULT_EVALUATION_REPETITIONS = 3
+export const DEFAULT_EVALUATION_MODEL = 'deepseek-v4-flash'
+
+export function parseEvaluationModel(raw: string | undefined): string {
+  return raw?.trim() || DEFAULT_EVALUATION_MODEL
+}
 
 export function parseEvaluationTimeoutMs(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_EVALUATION_TIMEOUT_MS
