@@ -65,9 +65,10 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
     const testCase = record(label.case)
     const metrics = record(testCase.metrics)
     const failure = record(testCase.failure)
-    const isV2 = typeof testCase.accepted === 'boolean'
-    if ((isV2 ? testCase.accepted : testCase.passed) === true) passed += 1
-    const scoreable = !isV2 || testCase.passed === true || failure.category === 'model_failure'
+    const isV2 = label.reportVersion === 2 && typeof testCase.accepted === 'boolean'
+    if (isV2 && testCase.accepted === true) passed += 1
+    const scoreable = isV2 && (failure.category === 'model_failure'
+      || (failure.category === null && testCase.passed === true))
     if (scoreable) {
       capabilitySamples += 1
       if (testCase.passed === true) capabilityPassed += 1

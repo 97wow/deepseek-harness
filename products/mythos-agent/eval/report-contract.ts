@@ -5,27 +5,49 @@ import { relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
+const safeToken = /^[a-zA-Z0-9._@/-]+$/u
+const safeSessionPath = /^home\/sessions\/[a-zA-Z0-9._/-]+\.zstd$/u
+const knownOverlays = new Set([
+  'eval/overlays/journey-compaction.yml', 'eval/overlays/journey-subagent.yml', 'eval/overlays/journey.yml',
+  'eval/overlays/qwen-local.yml', 'eval/overlays/reasoning-high.yml', 'eval/overlays/real-repo-scope-guard.yml',
+])
+const knownTurnReasons = new Set(['aborted', 'blocked', 'completed', 'error', 'interrupted', 'max-tokens'])
 
+export type EvaluationEntry = 'advanced-journey' | 'journey' | 'qwen-local' | 'real-repository' | 'standard'
 export type FailureCategory = 'model_failure' | 'harness_failure' | 'infrastructure_failure'
 
-export interface CommitmentInput {
-  config: Readonly<Record<string, unknown>>
-  files: readonly string[]
-  productRoot: string
+const commonFiles = [
+  'package.json', 'home/profiles/mythos/cordis.yml', 'home/profiles/mythos/cordis.patch.yml',
+  'home/profiles/mythos/package.json', 'eval/report-contract.ts', 'eval/session-metrics.ts',
+] as const
+
+const entryFiles: Readonly<Record<EvaluationEntry, readonly string[]>> = {
+  'advanced-journey': [
+    'eval/advanced-journey-configuration.ts', 'eval/advanced-journeys.ts', 'eval/journey-turn-runner.ts',
+    'eval/run-advanced-journeys.ts', 'eval/overlays/journey.yml',
+  ],
+  journey: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts', 'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
+  'qwen-local': ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/run-qwen-local.ts', 'eval/overlays/qwen-local.yml'],
+  'real-repository': ['eval/real-repo-cases.ts', 'eval/real-repo-configuration.ts', 'eval/run-real-repo.ts'],
+  standard: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts'],
 }
 
 export interface ReportCase {
+  agentIdleObserved?: boolean
+  billing?: unknown
+  dimensions?: readonly string[]
+  durationMs?: number
   id: string
-  metrics?: {
-    cacheReadTokens?: number
-    inputTokens?: number
-    outputTokens?: number
-    turnReason?: string
-  }
+  metrics?: object
   metricsError?: string
+  metricsSource?: string
   passed: boolean
   processExitCode?: number
+  rawSession?: string
+  relatedRawSessions?: readonly string[]
+  sessionFlushObserved?: boolean
   timedOut?: boolean
+  tier?: string
   verification?: { passed?: boolean }
 }
 
@@ -42,151 +64,232 @@ function canonical(value: unknown): string {
   return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonical(record[key])}`).join(',')}}`
 }
 
+function record(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function safeString(value: unknown): string | null {
+  return typeof value === 'string' && safeToken.test(value) ? value : null
+}
+
+function safeTimestamp(value: unknown): string | null {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value)
+    && Number.isFinite(Date.parse(value)) ? value : null
+}
+
+function safeTurnReason(value: unknown): string | null {
+  return typeof value === 'string' && knownTurnReasons.has(value) ? value : null
+}
+
+function projectMetrics(value: unknown): Record<string, unknown> | null {
+  const metrics = record(value)
+  if (Object.keys(metrics).length === 0) return null
+  const projected: Record<string, unknown> = {}
+  for (const key of ['cacheReadTokens', 'compactionSummaries', 'experienceRecoveries', 'failedToolResults', 'inputTokens',
+    'maxSubagentCallsPerStep', 'mutationCalls', 'outputTokens', 'resumeBoundaries', 'steps', 'toolResults', 'turns']) {
+    const number = nonNegativeInteger(metrics[key])
+    if (number !== null) projected[key] = number
+  }
+  if (typeof metrics.evidenceAfterMutation === 'boolean') projected.evidenceAfterMutation = metrics.evidenceAfterMutation
+  const turnReason = safeTurnReason(metrics.turnReason)
+  if (turnReason !== null) projected.turnReason = turnReason
+  return projected
+}
+
+export function implementationFiles(entry: EvaluationEntry, overlays: readonly string[] = []): string[] {
+  for (const overlay of overlays) {
+    if (!knownOverlays.has(overlay)) throw new Error('评测 overlay 不在中央已知集合')
+  }
+  return [...new Set([...commonFiles, ...entryFiles[entry], ...overlays])].sort()
+}
+
+export async function evaluationCommitment(input: {
+  config: Readonly<Record<string, unknown>>
+  entry: EvaluationEntry
+  overlays?: readonly string[]
+  productRoot: string
+}): Promise<{ algorithm: 'sha256-v2'; files: { path: string; sha256: string }[]; sha256: string }> {
+  const root = resolve(input.productRoot)
+  const paths = implementationFiles(input.entry, input.overlays).map(path => resolve(root, path))
+  const files = await Promise.all(paths.map(async path => {
+    if (!path.startsWith(`${root}${sep}`)) throw new Error('评测 commitment 文件越出产品目录')
+    return { path: relative(root, path).replaceAll(sep, '/'), sha256: createHash('sha256').update(await readFile(path)).digest('hex') }
+  }))
+  return {
+    algorithm: 'sha256-v2', files,
+    sha256: createHash('sha256').update(canonical({ config: input.config, entry: input.entry, files })).digest('hex'),
+  }
+}
+
 async function git(repoRoot: string, args: readonly string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
   return stdout
 }
 
-/** Computes a deterministic commitment without exposing file contents. */
-export async function evaluationCommitment(input: CommitmentInput): Promise<{
-  algorithm: 'sha256-v1'
-  files: { path: string; sha256: string }[]
-  sha256: string
-}> {
-  const root = resolve(input.productRoot)
-  const paths = [...new Set(input.files.map(path => resolve(root, path)))].sort()
-  const files = await Promise.all(paths.map(async path => {
-    if (path !== root && !path.startsWith(`${root}${sep}`)) throw new Error('评测 commitment 文件越出产品目录')
-    return {
-      path: relative(root, path).replaceAll(sep, '/'),
-      sha256: createHash('sha256').update(await readFile(path)).digest('hex'),
-    }
-  }))
-  const sha256 = createHash('sha256').update(canonical({ config: input.config, files })).digest('hex')
-  return { algorithm: 'sha256-v1', files, sha256 }
-}
-
-/** Captures the source revision and a digest of the tracked HEAD diff. */
+/** The digest covers tracked HEAD differences only; untracked contents are never read. */
 export async function sourceEvidence(repoRoot: string): Promise<{
-  dirtyDiff: { algorithm: 'sha256'; scope: 'tracked-head-diff'; sha256: string }
+  dirtyDiff: { algorithm: 'sha256'; scope: 'tracked-head-diff-only'; sha256: string }
   gitHead: string
-  worktree: { clean: boolean; untrackedPathsPresent: boolean }
+  worktree: { trackedDirty: boolean; untrackedPresent: boolean }
 }> {
-  const [gitHead, status, diff] = await Promise.all([
+  const [gitHead, trackedStatus, untrackedNames, diff] = await Promise.all([
     git(repoRoot, ['rev-parse', 'HEAD']),
-    git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=normal']),
+    git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=no']),
+    git(repoRoot, ['ls-files', '--others', '--exclude-standard']),
     git(repoRoot, ['diff', '--binary', '--no-ext-diff', 'HEAD', '--']),
   ])
   return {
-    dirtyDiff: {
-      algorithm: 'sha256',
-      scope: 'tracked-head-diff',
-      sha256: createHash('sha256').update(diff).digest('hex'),
-    },
-    gitHead: gitHead.trim(),
-    worktree: { clean: status === '', untrackedPathsPresent: status.split('\n').some(line => line.startsWith('?? ')) },
+    dirtyDiff: { algorithm: 'sha256', scope: 'tracked-head-diff-only', sha256: createHash('sha256').update(diff).digest('hex') },
+    gitHead: gitHead.trim(), worktree: { trackedDirty: trackedStatus !== '', untrackedPresent: untrackedNames !== '' },
   }
 }
 
-export function classifyFailure(testCase: ReportCase): { category: FailureCategory | null; reason: string | null } {
-  if (testCase.passed) return { category: null, reason: null }
-  if (testCase.metricsError || !testCase.metrics) return { category: 'harness_failure', reason: 'observability_gap' }
+export function validateTokens(metrics: unknown, source: unknown): {
+  cache: number | null; input: number | null; output: number | null; verified: boolean
+} {
+  const value = record(metrics)
+  const tokens = { cache: nonNegativeInteger(value.cacheReadTokens), input: nonNegativeInteger(value.inputTokens), output: nonNegativeInteger(value.outputTokens) }
+  return { ...tokens, verified: source === 'dsh_session_log' && Object.values(tokens).every(token => token !== null) }
+}
+
+export function validateBilling(value: unknown, trustedSource = false): {
+  amount: number | null; currency: string | null; source: string | null; verified: boolean
+} {
+  const billing = record(value)
+  const rawAmount = finiteNumber(billing.amount)
+  const amount = rawAmount !== null && rawAmount >= 0 ? rawAmount : null
+  const currency = typeof billing.currency === 'string' && /^[A-Z]{3}$/u.test(billing.currency) ? billing.currency : null
+  const source = billing.source === 'provider_invoice' || billing.source === 'provider_signed_usage' ? billing.source : null
+  return { amount, currency, source, verified: trustedSource && amount !== null && currency !== null && source !== null && billing.verified === true }
+}
+
+function completionComplete(testCase: ReportCase): boolean {
+  return testCase.agentIdleObserved === true && testCase.sessionFlushObserved === true
+    && typeof testCase.verification?.passed === 'boolean' && safeTurnReason(record(testCase.metrics).turnReason) !== null
+}
+
+export function classifyFailure(testCase: ReportCase, trust: { billing: boolean; identity: boolean } = { billing: false, identity: false }): {
+  category: FailureCategory | null; reason: string | null
+} {
+  if (!testCase.metrics || testCase.metricsError || !validateTokens(testCase.metrics, testCase.metricsSource).verified
+    || !validateBilling(testCase.billing, trust.billing).verified || !completionComplete(testCase) || !trust.identity) {
+    return { category: 'harness_failure', reason: 'observability_gap' }
+  }
   if (testCase.timedOut || (testCase.processExitCode ?? 0) !== 0) {
     return { category: 'infrastructure_failure', reason: testCase.timedOut ? 'timeout' : 'runner_process_failure' }
   }
-  if (testCase.verification?.passed === false) return { category: 'model_failure', reason: 'external_verifier_rejected' }
-  return { category: 'harness_failure', reason: 'observability_gap' }
+  if (testCase.verification?.passed === false || !testCase.passed) return { category: 'model_failure', reason: 'external_verifier_rejected' }
+  return { category: null, reason: null }
 }
 
-function safeRequestedIdentity(requestedModel: string, requestedProvider: string): Record<string, unknown> {
+function projectCase(testCase: ReportCase): Record<string, unknown> {
+  const metrics = projectMetrics(testCase.metrics)
+  const tokens = validateTokens(testCase.metrics, testCase.metricsSource)
+  const billing = validateBilling(testCase.billing)
+  const rawSession = typeof testCase.rawSession === 'string' && safeSessionPath.test(testCase.rawSession) ? testCase.rawSession : undefined
+  const relatedRawSessions = testCase.relatedRawSessions?.filter(path => safeSessionPath.test(path))
   return {
-    requested: { model: requestedModel, provider: requestedProvider },
-    server: { deployment: null, model: null, provider: null, status: 'unknown_unverified' },
+    accepted: false,
+    billing: { ...billing, tokens: { cache: tokens.cache, input: tokens.input, output: tokens.output }, tokensVerified: tokens.verified },
+    completionEvidence: {
+      agentIdle: { status: testCase.agentIdleObserved === true ? 'observed' : 'unknown_unverified', value: testCase.agentIdleObserved === true ? true : null },
+      externalVerifier: { status: typeof testCase.verification?.passed === 'boolean' ? 'observed' : 'unknown_unverified', value: testCase.verification?.passed ?? null },
+      sessionFlush: { status: testCase.sessionFlushObserved === true ? 'observed' : 'unknown_unverified', value: testCase.sessionFlushObserved === true ? true : null },
+      turnReason: metrics?.turnReason ? { status: 'observed', value: metrics.turnReason } : { status: 'unknown_unverified', value: null },
+    },
+    durationMs: nonNegativeInteger(testCase.durationMs), failure: classifyFailure(testCase),
+    id: safeString(testCase.id) ?? 'invalid-case-id', metrics, passed: testCase.passed === true,
+    processExitCode: nonNegativeInteger(testCase.processExitCode), ...(rawSession ? { rawSession } : {}),
+    ...(relatedRawSessions?.length ? { relatedRawSessions } : {}), timedOut: testCase.timedOut === true,
+    tier: safeString(testCase.tier), verification: { passed: typeof testCase.verification?.passed === 'boolean' ? testCase.verification.passed : null },
   }
 }
 
-/** Adds v2 evidence and computes the fail-closed formal acceptance result. */
+function projectDraft(draft: object): Record<string, unknown> {
+  const value = record(draft)
+  const baseline = record(value.baseline)
+  const replay = record(value.replay)
+  return {
+    baseline: {
+      configurationSha256: safeString(baseline.configurationSha256), dshVersion: safeString(baseline.dshVersion),
+      mythosVersion: safeString(baseline.mythosVersion), suite: safeString(baseline.suite),
+      timeoutMs: nonNegativeInteger(baseline.timeoutMs), variant: safeString(baseline.variant),
+    },
+    completedAt: safeTimestamp(value.completedAt),
+    profile: safeString(value.profile),
+    ...(Object.keys(replay).length ? { replay: { iteration: nonNegativeInteger(replay.iteration), total: nonNegativeInteger(replay.total) } } : {}),
+    runId: safeString(value.runId), startedAt: safeTimestamp(value.startedAt),
+  }
+}
+
 export async function buildEvaluationReport(input: {
   cases: readonly ReportCase[]
-  commitment: CommitmentInput
+  config: Readonly<Record<string, unknown>>
   draft: object
+  entry: EvaluationEntry
+  overlays?: readonly string[]
+  productRoot: string
   repoRoot: string
   requestedModel: string
   requestedProvider: string
 }): Promise<Record<string, unknown>> {
-  const manifest = JSON.parse(await readFile(resolve(input.commitment.productRoot, 'package.json'), 'utf8')) as ProductManifest
-  const cases = input.cases.map(testCase => {
-    const failure = classifyFailure(testCase)
-    return {
-      ...testCase,
-      accepted: false,
-      billing: {
-        amount: null,
-        currency: null,
-        source: 'unavailable',
-        tokens: {
-          cache: testCase.metrics?.cacheReadTokens ?? null,
-          input: testCase.metrics?.inputTokens ?? null,
-          output: testCase.metrics?.outputTokens ?? null,
-        },
-        tokensVerified: testCase.metrics !== undefined,
-        verified: false,
-      },
-      completionEvidence: {
-        agentIdle: { status: 'unknown_unverified', value: null },
-        externalVerifier: {
-          status: typeof testCase.verification?.passed === 'boolean' ? 'observed' : 'unknown_unverified',
-          value: testCase.verification?.passed ?? null,
-        },
-        sessionFlush: { status: 'unknown_unverified', value: null },
-        turnReason: testCase.metrics?.turnReason
-          ? { status: 'observed', value: testCase.metrics.turnReason }
-          : { status: 'unknown_unverified', value: null },
-      },
-      failure,
-    }
-  })
-  const acceptanceFailures: string[] = []
-  if (cases.length === 0) acceptanceFailures.push('zero_cases')
-  if (!cases.every(testCase => testCase.passed === true)) acceptanceFailures.push('case_failure')
-  acceptanceFailures.push('server_identity_unverified')
-  if (cases.some(testCase => testCase.billing.verified !== true)) acceptanceFailures.push('billing_unverified')
-  if (cases.some(testCase => testCase.completionEvidence.agentIdle.status !== 'observed'
-    || testCase.completionEvidence.sessionFlush.status !== 'observed'
-    || testCase.completionEvidence.turnReason.status !== 'observed'
-    || testCase.completionEvidence.externalVerifier.status !== 'observed')) acceptanceFailures.push('completion_evidence_incomplete')
-
+  const manifest = JSON.parse(await readFile(resolve(input.productRoot, 'package.json'), 'utf8')) as ProductManifest
+  const [source, implementation] = await Promise.all([
+    sourceEvidence(input.repoRoot),
+    evaluationCommitment({ config: { ...input.config, requestedModel: input.requestedModel, requestedProvider: input.requestedProvider },
+      entry: input.entry, overlays: input.overlays, productRoot: input.productRoot }),
+  ])
+  const cases = input.cases.map(projectCase)
+  const failures = ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete']
+  if (cases.length === 0) failures.push('zero_cases')
+  if (cases.some(testCase => testCase.passed !== true)) failures.push('case_failure')
+  if (source.worktree.trackedDirty) failures.push('tracked_source_dirty')
+  if (source.worktree.untrackedPresent) failures.push('untracked_source_present')
   return {
-    ...input.draft,
-    acceptance: { failures: acceptanceFailures, passed: acceptanceFailures.length === 0 },
-    cases,
-    implementation: await evaluationCommitment({
-      ...input.commitment,
-      config: {
-        ...input.commitment.config,
-        requestedModel: input.requestedModel,
-        requestedProvider: input.requestedProvider,
-      },
-    }),
-    modelIdentity: safeRequestedIdentity(input.requestedModel, input.requestedProvider),
-    passed: acceptanceFailures.length === 0,
-    reportVersion: 2,
-    source: {
-      ...await sourceEvidence(input.repoRoot),
-      dsh: {
-        declaredCommit: manifest.mythos?.dshCommit ?? null,
-        declaredVersion: manifest.mythos?.dshVersion ?? null,
-      },
-      productVersion: manifest.version ?? null,
-    },
+    ...projectDraft(input.draft), acceptance: { failures, passed: false }, cases, implementation,
+    modelIdentity: { requested: { model: safeString(input.requestedModel), provider: safeString(input.requestedProvider) },
+      server: { deployment: null, model: null, provider: null, status: 'unknown_unverified' } },
+    passed: false, reportVersion: 2,
+    source: { ...source, dsh: { declaredCommit: safeString(manifest.mythos?.dshCommit), declaredVersion: safeString(manifest.mythos?.dshVersion) },
+      productVersion: safeString(manifest.version) },
   }
 }
 
-/** Accepts historical v1 reports and current v2 reports without silently upgrading evidence. */
 export function parseEvaluationReport(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('评测报告必须是对象')
-  const report = value as Record<string, unknown>
+  const report = record(value)
   if (report.reportVersion !== 1 && report.reportVersion !== 2) throw new Error('不支持的评测报告版本')
   if (!Array.isArray(report.cases)) throw new Error('评测报告缺少 cases')
+  if (report.reportVersion === 2) {
+    const acceptance = record(report.acceptance)
+    const implementation = record(report.implementation)
+    const identity = record(report.modelIdentity)
+    const source = record(report.source)
+    const worktree = record(source.worktree)
+    if (typeof acceptance.passed !== 'boolean' || !Array.isArray(acceptance.failures)
+      || typeof report.passed !== 'boolean' || typeof report.runId !== 'string'
+      || typeof implementation.sha256 !== 'string' || !Array.isArray(implementation.files)
+      || typeof record(identity.server).status !== 'string' || typeof source.gitHead !== 'string'
+      || typeof worktree.trackedDirty !== 'boolean' || typeof worktree.untrackedPresent !== 'boolean') {
+      throw new Error('v2 评测报告顶层 schema 无效')
+    }
+    for (const item of report.cases) {
+      const testCase = record(item)
+      const failure = record(testCase.failure)
+      const billing = record(testCase.billing)
+      if (typeof testCase.id !== 'string' || typeof testCase.passed !== 'boolean' || typeof testCase.accepted !== 'boolean'
+        || !['model_failure', 'harness_failure', 'infrastructure_failure', null].includes(failure.category as never)
+        || typeof billing.verified !== 'boolean' || typeof record(testCase.completionEvidence).turnReason !== 'object') {
+        throw new Error('v2 评测报告 case schema 无效')
+      }
+    }
+  }
   return report
 }

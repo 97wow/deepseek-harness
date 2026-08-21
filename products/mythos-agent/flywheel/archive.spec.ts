@@ -56,9 +56,11 @@ describe('archiveFlywheel', () => {
     const index = (await readFile(join(options.outputRoot, 'index.jsonl'), 'utf8'))
       .trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
     expect(index).toMatchObject([
-      { caseId: 'success', hasRaw: true, passed: true },
+      { caseId: 'success', hasRaw: true, passed: false },
       { caseId: 'timeout', hasRaw: false, passed: false },
     ])
+    const label = JSON.parse(await readFile(join(options.outputRoot, 'runs', 'run-1', 'success', 'label.json'), 'utf8')) as Record<string, unknown>
+    expect(label).toMatchObject({ evidenceStatus: 'legacy_unverified', case: { accepted: false, failure: { category: 'harness_failure' } } })
   })
 
   it('拒绝被篡改的不可变原始副本', async () => {
@@ -92,5 +94,11 @@ describe('archiveFlywheel', () => {
     await symlink(outside, link)
     await writeReport(options, [{ id: 'case', passed: false, rawSession: relative(options.productRoot, link) }])
     await expect(archiveFlywheel(options)).rejects.toThrow('符号链接越出会话根目录')
+  })
+
+  it('拒绝缺少 acceptance schema 的 v2 报告', async () => {
+    const options = await fixture()
+    await writeFile(join(options.runsRoot, 'run.json'), JSON.stringify({ cases: [], reportVersion: 2, runId: 'run-1' }))
+    await expect(archiveFlywheel(options)).rejects.toThrow('schema')
   })
 })

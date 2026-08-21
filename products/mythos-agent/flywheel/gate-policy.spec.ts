@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { evaluateReleaseGate } from './gate-policy.js'
+import { summarizeCohort } from './analysis.js'
 
 const healthy = {
   cacheReadTokensMean: 0,
+  capabilityPassRate: 1,
+  capabilitySamples: 3,
   compactionSummariesMean: 0,
   durationMsP50: 10,
   durationMsP95: 20,
@@ -58,5 +61,16 @@ describe('evaluateReleaseGate', () => {
     })
     expect(result.passed).toBe(false)
     expect(result.failures).toHaveLength(11)
+  })
+
+  it('三个以上 v1 passed 样本仍无法通过正式 gate', () => {
+    const labels = Array.from({ length: 4 }, () => ({
+      case: { id: 'case', passed: true }, raw: {}, reportVersion: 1,
+    }))
+    const summary = summarizeCohort(labels)
+    expect(summary).toMatchObject({ capabilitySamples: 0, passRate: 0, samples: 4 })
+    expect(evaluateReleaseGate({ 'current:case': summary }, {
+      caseIds: ['case'], cohortPrefix: 'current', maxDurationMsP95: 100, minSamples: 3,
+    }).passed).toBe(false)
   })
 })

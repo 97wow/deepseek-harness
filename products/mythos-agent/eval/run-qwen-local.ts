@@ -9,5 +9,6 @@ process.env.MYTHOS_EVAL_MODEL = `mlx-community/Qwen3.8-27B-4bit@${qwenRevision}`
 process.env.MYTHOS_EVAL_PATCH = join(evalRoot, 'overlays', 'qwen-local.yml')
 process.env.MYTHOS_EVAL_TIMEOUT_MS ??= '600000'
 process.env.MYTHOS_EVAL_VARIANT = 'qwen3.8-27b-mlx-4bit'
+process.env.MYTHOS_EVAL_ENTRY = 'qwen-local'
 
 await import('./run.js')

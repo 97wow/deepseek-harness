@@ -16,6 +16,7 @@ interface CaseResult {
   id: string
   metricsError?: string
   metrics?: SessionMetrics
+  metricsSource?: 'dsh_session_log'
   passed: boolean
   processExitCode: number
   rawSession?: string
@@ -235,6 +236,7 @@ async function runCase(testCase: EvaluationCase): Promise<CaseResult> {
     id: testCase.id,
     ...(metricsError ? { metricsError } : {}),
     metrics,
+    ...(metrics ? { metricsSource: 'dsh_session_log' as const } : {}),
     passed: processExitCode === 0 && verification.passed && behaviorVerification.passed,
     processExitCode,
     rawSession: rawSession ? relative(productRoot, rawSession) : undefined,
@@ -317,28 +319,12 @@ async function main(): Promise<void> {
   }
   const report = await buildEvaluationReport({
     cases: results,
-    commitment: {
-      config: {
-        endpoint: safeEndpoint(process.env.DEEPSEEK_BASE_URL),
-        suite: evaluationSuite,
-        timeoutMs: evaluationTimeoutMs,
-        variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default',
-      },
-      files: [
-        'package.json',
-        'home/profiles/mythos/cordis.yml',
-        'home/profiles/mythos/cordis.patch.yml',
-        'home/profiles/mythos/package.json',
-        'eval/cases.ts',
-        'eval/options.ts',
-        'eval/report-contract.ts',
-        'eval/run.ts',
-        'eval/session-metrics.ts',
-        ...(evalPatch ? [evalPatch] : []),
-      ],
-      productRoot,
-    },
+    config: { endpoint: safeEndpoint(process.env.DEEPSEEK_BASE_URL), suite: evaluationSuite,
+      timeoutMs: evaluationTimeoutMs, variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
     draft,
+    entry: process.env.MYTHOS_EVAL_ENTRY === 'qwen-local' ? 'qwen-local' : 'standard',
+    overlays: evalPatch ? [relative(productRoot, evalPatch)] : [],
+    productRoot,
     repoRoot,
     requestedModel: evaluationModel,
     requestedProvider: process.env.MYTHOS_EVAL_PROVIDER ?? 'deepseek',

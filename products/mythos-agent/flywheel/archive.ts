@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream, constants } from 'node:fs'
 import { chmod, copyFile, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
+import { parseEvaluationReport } from '../eval/report-contract.js'
 
 export interface ArchiveOptions {
   outputRoot: string
@@ -75,7 +76,8 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
   let rawSessions = 0
 
   for (const filename of filenames) {
-    const report = JSON.parse(await readFile(join(runsRoot, filename), 'utf8')) as Record<string, unknown>
+    const report = parseEvaluationReport(JSON.parse(await readFile(join(runsRoot, filename), 'utf8')))
+    const legacy = report.reportVersion === 1
     const runId = report.runId
     if (!isSafeId(runId)) continue
     const cases = Array.isArray(report.cases) ? report.cases : []
@@ -103,10 +105,18 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
           rawSessions += 1
         }
       }
+      const archivedCase = legacy ? {
+        accepted: false,
+        failure: { category: 'harness_failure', reason: 'legacy_unverified' },
+        id: caseId,
+        passed: testCase.passed === true,
+        ...(testCase.rawSession !== undefined ? { rawSession: testCase.rawSession } : {}),
+      } : testCase
       const label = {
         baseline: report.baseline,
-        case: testCase,
+        case: archivedCase,
         completedAt: report.completedAt,
+        evidenceStatus: legacy ? 'legacy_unverified' : 'v2',
         raw,
         ...(relatedRaw.length > 0 ? { relatedRaw } : {}),
         reportVersion: report.reportVersion,
@@ -120,7 +130,7 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
         caseId,
         hasRaw: raw !== null,
         label: relative(outputRoot, labelPath),
-        passed: testCase.passed === true,
+        passed: !legacy && testCase.accepted === true,
         runId,
         ...(raw ? { sha256: raw.sha256 } : {}),
       })

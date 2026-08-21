@@ -123,6 +123,7 @@ for (const testCase of chosen) {
   cases.push({ behaviorVerification: { evidence: { evidenceAfterMutation: metrics?.evidenceAfterMutation ?? false, mutationCalls: metrics?.mutationCalls ?? 0 },
     passed: behaviorPassed, reason: behaviorPassed ? '修改后验证轨迹通过' : '缺少唯一原始会话或修改后验证' },
     dimensions: testCase.dimensions, durationMs: Math.round(performance.now() - started), id: testCase.id, metrics,
+    ...(metrics ? { metricsSource: 'dsh_session_log' as const } : {}),
     passed: verification.passed && behaviorPassed, processExitCode: processResult.exitCode,
     rawSession: raw ? relative(productRoot, raw) : undefined, tier: 'real-repository', timedOut: processResult.timedOut, verification })
 }
@@ -135,23 +136,12 @@ const draft = { baseline: { configurationSha256: await realRepoConfigurationSha2
   profile: 'mythos', reportVersion: 1, runId: randomUUID(), startedAt }
 const report = await buildEvaluationReport({
   cases,
-  commitment: {
-    config: { endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, selected: selected ?? null, suite: 'real-repository', timeoutMs, variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
-    files: [
-      'package.json',
-      'home/profiles/mythos/cordis.yml',
-      'home/profiles/mythos/cordis.patch.yml',
-      'home/profiles/mythos/package.json',
-      'eval/real-repo-cases.ts',
-      'eval/real-repo-configuration.ts',
-      'eval/report-contract.ts',
-      'eval/run-real-repo.ts',
-      'eval/session-metrics.ts',
-      ...(evalPatch ? [evalPatch] : []),
-    ],
-    productRoot,
-  },
+  config: { endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, selected: selected ?? null,
+    suite: 'real-repository', timeoutMs, variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
   draft,
+  entry: 'real-repository',
+  overlays: evalPatch ? [relative(productRoot, evalPatch)] : [],
+  productRoot,
   repoRoot,
   requestedModel: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',
   requestedProvider: process.env.MYTHOS_EVAL_PROVIDER ?? 'deepseek',
