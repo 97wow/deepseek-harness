@@ -5,6 +5,6 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   root: dirname(fileURLToPath(import.meta.url)),
   test: {
-    include: ['eval/**/*.spec.ts', 'flywheel/**/*.spec.ts', 'product/**/*.spec.ts', 'release/**/*.spec.ts'],
+    include: ['control/**/*.spec.ts', 'eval/**/*.spec.ts', 'flywheel/**/*.spec.ts', 'product/**/*.spec.ts', 'release/**/*.spec.ts'],
   },
 })
