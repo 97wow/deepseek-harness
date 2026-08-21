@@ -22,6 +22,7 @@
     "eval:advanced-journey": "tsx eval/run-advanced-journeys.ts",
     "eval:advanced-journey:repeat": "tsx eval/repeat-advanced-journeys.ts",
     "eval:qwen-local": "tsx eval/run-qwen-local.ts",
+    "eval:real-repo": "tsx eval/run-real-repo.ts",
     "eval:repeat": "tsx eval/repeat.ts",
     "flywheel:analyze": "tsx flywheel/analyze.ts",
     "flywheel:build": "tsx flywheel/build.ts",
@@ -33,12 +34,13 @@
     "gate:comprehensive": "tsx flywheel/comprehensive-gate.ts",
     "gate:journey": "tsx flywheel/journey-gate.ts",
     "gate:advanced-journey": "tsx flywheel/advanced-journey-gate.ts",
+    "gate:real-repo-scope": "tsx flywheel/real-repo-scope-gate.ts",
     "release:check": "tsx release/check.ts",
     "release:pack": "tsx release/pack.ts",
     "release:verify": "tsx release/verify.ts",
     "smoke:web": "tsx product/smoke-web.ts",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/run-comprehensive.ts eval/run-journeys.ts eval/journeys.ts eval/journey-configuration.ts eval/journey-turn-runner.ts eval/repeat-journeys.ts eval/advanced-journeys.ts eval/advanced-journey-configuration.ts eval/run-advanced-journeys.ts eval/repeat-advanced-journeys.ts eval/run-qwen-local.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/comprehensive-gate.ts flywheel/journey-gate.ts flywheel/advanced-journey-gate.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts",
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/run-comprehensive.ts eval/run-journeys.ts eval/journeys.ts eval/journey-configuration.ts eval/journey-turn-runner.ts eval/repeat-journeys.ts eval/advanced-journeys.ts eval/advanced-journey-configuration.ts eval/run-advanced-journeys.ts eval/repeat-advanced-journeys.ts eval/real-repo-cases.ts eval/real-repo-configuration.ts eval/run-real-repo.ts eval/run-qwen-local.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/comprehensive-gate.ts flywheel/journey-gate.ts flywheel/advanced-journey-gate.ts flywheel/real-repo-scope-gate.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts",
     "web": "tsx product/launch.ts web"
   },
   "dependencies": {

@@ -20,6 +20,7 @@ for (const script of [
   'gate:comprehensive',
   'gate:journey',
   'gate:advanced-journey',
+  'gate:real-repo-scope',
   'release:check',
 ]) run(script)
 process.stdout.write('Mythos release verify: 全部门禁通过\n')
