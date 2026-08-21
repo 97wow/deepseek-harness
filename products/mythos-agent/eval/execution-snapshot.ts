@@ -4,6 +4,7 @@ import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
+import { evaluationRuntimeSourceFiles } from './entry-registry.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -33,9 +34,10 @@ export interface VerifiedExecutionSnapshot {
 export interface ArtifactFileIdentity {
   mode: number
   path: string
-  sha256: string
+  sha256: string | null
   size: number
-  type: 'file' | 'symlink'
+  symlinkTarget: string | null
+  type: 'directory' | 'file' | 'symlink'
 }
 
 export interface ExecutionArtifactCommitment {
@@ -50,6 +52,12 @@ export interface ExecutionArtifactCommitment {
 export interface ExecutionArtifactHooks {
   build(root: string): Promise<void>
   install(root: string): Promise<void>
+}
+
+export interface ExecutionArtifactParentAnchor {
+  artifactSha256: string
+  gitCommit: string
+  gitTree: string
 }
 
 const mutableRoots = ['products/mythos-agent/home/sessions', 'products/mythos-agent/runs'] as const
@@ -68,16 +76,35 @@ async function git(repoRoot: string, args: readonly string[]): Promise<string> {
   return stdout
 }
 
+async function gitBytes(repoRoot: string, args: readonly string[]): Promise<Buffer> {
+  const { stdout } = await execFileAsync('git', args, { cwd: repoRoot, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 })
+  return stdout
+}
+
 async function run(root: string, file: string, args: readonly string[]): Promise<string> {
   const { stdout } = await execFileAsync(file, args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
   return stdout
 }
 
-function parseTree(output: string): SnapshotFileIdentity[] {
-  return output.split('\0').filter(Boolean).map(record => {
-    const separator = record.indexOf('\t')
-    const metadata = record.slice(0, separator).split(' ')
-    const path = record.slice(separator + 1)
+function decodeUtf8(bytes: Buffer, subject: string): string {
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
+  catch { throw new Error(`${subject} 不是有效 UTF-8，无法无损承诺`) }
+}
+
+function parseTree(output: Buffer): SnapshotFileIdentity[] {
+  const records: Buffer[] = []
+  let start = 0
+  for (let index = 0; index < output.length; index += 1) {
+    if (output[index] !== 0) continue
+    if (index > start) records.push(output.subarray(start, index))
+    start = index + 1
+  }
+  if (start !== output.length) throw new Error('Git tree 输出缺少 NUL 终止符')
+  return records.map(record => {
+    const separator = record.indexOf(0x09)
+    if (separator < 0) throw new Error('Git tree metadata 缺少路径分隔符')
+    const metadata = decodeUtf8(record.subarray(0, separator), 'Git tree metadata').split(' ')
+    const path = decodeUtf8(record.subarray(separator + 1), 'Git 路径')
     const [mode, type, objectId] = metadata
     if (separator < 0 || mode === undefined || objectId === undefined || (type !== 'blob' && type !== 'commit')
       || path === '' || path.startsWith('/') || path.split('/').includes('..')) {
@@ -94,7 +121,7 @@ export async function commitExecutionSnapshot(repoRoot: string, revision = 'HEAD
   const gitTree = (await git(root, ['rev-parse', `${gitCommit}^{tree}`])).trim()
   const configuredFormat = (await git(root, ['rev-parse', '--show-object-format'])).trim()
   const gitObjectFormat: 'sha1' | 'sha256' = configuredFormat === 'sha256' ? 'sha256' : 'sha1'
-  const files = parseTree(await git(root, ['ls-tree', '-r', '-z', '--full-tree', gitCommit]))
+  const files = parseTree(await gitBytes(root, ['ls-tree', '-r', '-z', '--full-tree', gitCommit]))
   const identity = { files, gitCommit, gitObjectFormat, gitTree }
   return { algorithm: 'git-tree-sha256-v1', ...identity,
     sha256: createHash('sha256').update(canonical(identity)).digest('hex') }
@@ -123,8 +150,21 @@ async function inventory(root: string, directory = root, allowGitMetadata = fals
   return result.sort()
 }
 
+function pathOrder(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
 async function artifactInventory(root: string, directory = root): Promise<ArtifactFileIdentity[]> {
   const result: ArtifactFileIdentity[] = []
+  const directoryPath = relative(root, directory).split(sep).join('/') || '.'
+  if (!mutableRoots.some(mutable => directoryPath === mutable || directoryPath.startsWith(`${mutable}/`))) {
+    const directoryInformation = await lstat(directory)
+    if (!directoryInformation.isDirectory() || directoryInformation.isSymbolicLink()) {
+      throw new Error('执行产物目录类型无效')
+    }
+    result.push({ mode: directoryInformation.mode & 0o777, path: directoryPath, sha256: null, size: 0,
+      symlinkTarget: null, type: 'directory' })
+  }
   for (const name of await readdir(directory)) {
     const absolute = resolve(directory, name)
     const information = await lstat(absolute)
@@ -133,18 +173,18 @@ async function artifactInventory(root: string, directory = root): Promise<Artifa
     if (information.isDirectory()) result.push(...await artifactInventory(root, absolute))
     else if (information.isFile()) {
       const contents = await readFile(absolute)
-      result.push({ mode: information.mode & 0o111, path, sha256: createHash('sha256').update(contents).digest('hex'),
-        size: contents.length, type: 'file' })
+      result.push({ mode: information.mode & 0o777, path, sha256: createHash('sha256').update(contents).digest('hex'),
+        size: contents.length, symlinkTarget: null, type: 'file' })
     } else if (information.isSymbolicLink()) {
-      const target = await readlink(absolute)
+      const targetBytes = await readlink(absolute, { encoding: 'buffer' })
+      const target = decodeUtf8(targetBytes, '符号链接目标')
       const resolvedTarget = resolve(dirname(absolute), target)
       if (isAbsolute(target) || !inside(root, resolvedTarget)) throw new Error('执行产物包含快照外符号链接')
-      const contents = Buffer.from(target)
-      result.push({ mode: information.mode & 0o111, path, sha256: createHash('sha256').update(contents).digest('hex'),
-        size: contents.length, type: 'symlink' })
+      result.push({ mode: information.mode & 0o777, path, sha256: createHash('sha256').update(targetBytes).digest('hex'),
+        size: targetBytes.length, symlinkTarget: target, type: 'symlink' })
     } else throw new Error('执行产物包含非普通文件')
   }
-  return result.sort((left, right) => left.path.localeCompare(right.path))
+  return result.sort((left, right) => pathOrder(left.path, right.path))
 }
 
 /** Verifies an extracted snapshot byte-for-byte against its committed Git inventory. */
@@ -187,10 +227,17 @@ export async function assertSnapshotRuntimePath(snapshot: VerifiedExecutionSnaps
   return canonical
 }
 
+const evaluationRuntimeCompilerArguments = ['exec', 'tsc', '--ignoreConfig', '--target', 'ES2023', '--module', 'NodeNext',
+  '--moduleResolution', 'NodeNext', '--types', 'node', '--outDir', '.mythos-eval-runtime', '--rootDir', '.',
+  ...evaluationRuntimeSourceFiles] as const
+
 async function defaultHooks(): Promise<ExecutionArtifactHooks> {
   return {
     async install(root) { await run(root, 'pnpm', ['install', '--offline', '--frozen-lockfile', '--ignore-scripts']) },
-    async build(root) { await run(root, 'pnpm', ['build']) },
+    async build(root) {
+      await run(root, 'pnpm', ['build'])
+      await run(join(root, 'products/mythos-agent'), 'pnpm', evaluationRuntimeCompilerArguments)
+    },
   }
 }
 
@@ -218,6 +265,20 @@ async function buildCommittedTree(
   }
 }
 
+async function ensureMutableOutputRoots(root: string): Promise<void> {
+  const canonicalRoot = await realpath(root)
+  for (const configured of mutableRoots) {
+    const absolute = resolve(canonicalRoot, configured)
+    if (!inside(canonicalRoot, absolute)) throw new Error('可写输出目录逃逸执行产物')
+    await mkdir(absolute, { recursive: true })
+    const canonical = await realpath(absolute)
+    const information = await lstat(absolute)
+    if (canonical !== absolute || !information.isDirectory() || information.isSymbolicLink()) {
+      throw new Error('可写输出目录覆盖或遮蔽执行路径')
+    }
+  }
+}
+
 /** Materializes, offline-installs, builds, and hashes a self-contained evaluation artifact. */
 export async function materializeExecutionArtifact(
   repoRoot: string,
@@ -230,10 +291,12 @@ export async function materializeExecutionArtifact(
   if ((await readdir(destination)).length !== 0) throw new Error('执行产物目录必须为空')
   const operations = hooks ?? await defaultHooks()
   await buildCommittedTree(repoRoot, destination, source, operations)
-  for (const path of mutableRoots) await mkdir(resolve(destination, path), { recursive: true })
+  await ensureMutableOutputRoots(destination)
   const pnpmVersion = (await run(destination, 'pnpm', ['--version'])).trim()
+  await lockExecutionArtifact(destination)
   const files = await artifactInventory(destination)
-  const build = { commands: ['pnpm install --offline --frozen-lockfile --ignore-scripts', 'pnpm build'],
+  const build = { commands: ['pnpm install --offline --frozen-lockfile --ignore-scripts', 'pnpm build',
+    `pnpm --dir products/mythos-agent ${evaluationRuntimeCompilerArguments.join(' ')}`],
     nodeVersion: process.version, pnpmVersion }
   const identity = { build, files, mutableRoots, source }
   return { algorithm: 'execution-artifact-sha256-v1', ...identity,
@@ -247,12 +310,54 @@ export async function verifyExecutionArtifact(
 ): Promise<VerifiedExecutionSnapshot> {
   const canonicalRoot = await realpath(root)
   const files = await artifactInventory(canonicalRoot)
+  if (canonical(files) !== canonical(commitment.files)) throw new Error('离线执行产物文件清单与 commitment 不一致')
   const identity = { build: commitment.build, files, mutableRoots: commitment.mutableRoots, source: commitment.source }
   if (createHash('sha256').update(canonical(identity)).digest('hex') !== commitment.sha256) {
     throw new Error('离线执行产物内容与 commitment 不一致')
   }
   return Object.freeze({ commitmentSha256: commitment.sha256, gitCommit: commitment.source.gitCommit,
     gitTree: commitment.source.gitTree, root: canonicalRoot })
+}
+
+/** Captures the supervisor-owned values that a child cannot derive from a replacement manifest. */
+export function executionArtifactParentAnchor(commitment: ExecutionArtifactCommitment): ExecutionArtifactParentAnchor {
+  return Object.freeze({ artifactSha256: commitment.sha256, gitCommit: commitment.source.gitCommit,
+    gitTree: commitment.source.gitTree })
+}
+
+/** Rejects a manifest whose public hashes or source identity diverge from the supervisor's in-memory values. */
+export function assertExecutionArtifactParentAnchor(
+  commitment: ExecutionArtifactCommitment,
+  expected: ExecutionArtifactParentAnchor,
+): void {
+  if (commitment.sha256 !== expected.artifactSha256 || commitment.source.gitCommit !== expected.gitCommit
+    || commitment.source.gitTree !== expected.gitTree) {
+    throw new Error('执行产物 manifest 与 parent anchor 不一致')
+  }
+}
+
+/** Returns bytes only after the same buffer matches its parent-anchored artifact entry. */
+export async function readAnchoredArtifactFile(
+  root: string,
+  commitment: ExecutionArtifactCommitment,
+  path: string,
+): Promise<Buffer> {
+  const canonicalRoot = await realpath(root)
+  const absolute = resolve(canonicalRoot, path)
+  if (!inside(canonicalRoot, absolute)) throw new Error('父锚定文件路径逃逸')
+  const entry = commitment.files.find(candidate => candidate.path === path)
+  if (entry?.type !== 'file' || entry.sha256 === null) throw new Error('父锚定文件不在产物清单中')
+  const canonicalPath = await realpath(absolute)
+  const information = await lstat(absolute)
+  if (canonicalPath !== absolute || !information.isFile() || information.isSymbolicLink()
+    || (information.mode & 0o777) !== entry.mode) {
+    throw new Error('父锚定文件类型或 mode 不一致')
+  }
+  const contents = await readFile(absolute)
+  if (contents.length !== entry.size || createHash('sha256').update(contents).digest('hex') !== entry.sha256) {
+    throw new Error('父锚定文件内容不一致')
+  }
+  return contents
 }
 
 /** Writes only hashes and paths; no file contents are serialized into the manifest. */
@@ -284,5 +389,6 @@ export async function lockExecutionArtifact(root: string): Promise<void> {
     }
   }
   await visit(canonicalRoot)
+  await chmod(canonicalRoot, 0o555)
   for (const path of mutableRoots) await chmod(resolve(canonicalRoot, path), 0o700)
 }

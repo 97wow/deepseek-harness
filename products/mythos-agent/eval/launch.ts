@@ -1,13 +1,17 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdtemp, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { parseEvaluationLaunchArguments, type EvaluationEntryId } from './entry-registry.js'
 import {
   assertSnapshotRuntimePath,
+  assertExecutionArtifactParentAnchor,
+  executionArtifactParentAnchor,
   lockExecutionArtifact,
   materializeExecutionArtifact,
+  readAnchoredArtifactFile,
   readExecutionArtifactManifest,
   verifyExecutionArtifact,
   writeExecutionArtifactManifest,
@@ -38,10 +42,15 @@ async function verifyFormalRuntime(parameters: readonly string[]): Promise<void>
   const artifactRoot = process.env.MYTHOS_EVAL_ARTIFACT_ROOT
   if (manifestPath === undefined || artifactRoot === undefined) throw new Error('正式评测缺少执行产物证据')
   const commitment = await readExecutionArtifactManifest(manifestPath)
+  assertExecutionArtifactParentAnchor(commitment, {
+    artifactSha256: process.env.MYTHOS_EVAL_EXPECTED_ARTIFACT_SHA256 ?? '',
+    gitCommit: process.env.MYTHOS_EVAL_EXPECTED_GIT_COMMIT ?? '',
+    gitTree: process.env.MYTHOS_EVAL_EXPECTED_GIT_TREE ?? '',
+  })
   const verified = await verifyExecutionArtifact(artifactRoot, commitment)
   await assertSnapshotRuntimePath(verified, fileURLToPath(import.meta.url))
-  const expectedProductRoot = resolve(artifactRoot, 'products/mythos-agent')
-  if (resolve(process.cwd()) !== expectedProductRoot) throw new Error('正式评测 cwd 不在已验证执行产物内')
+  const expectedProductRoot = await realpath(resolve(verified.root, 'products/mythos-agent'))
+  if (await realpath(process.cwd()) !== expectedProductRoot) throw new Error('正式评测 cwd 不在已验证执行产物内')
   const expectedCommand = ['tsx', 'eval/launch.ts', ...parameters].join(' ')
   if (process.env.MYTHOS_EVAL_CANONICAL_COMMAND !== expectedCommand) throw new Error('正式评测 command 与预承诺不一致')
   if (process.env.MYTHOS_EVAL_INVOCATION_JSON !== JSON.stringify(parameters)) throw new Error('正式评测参数与预承诺不一致')
@@ -57,22 +66,33 @@ async function bootstrapFormalRuntime(parameters: readonly string[]): Promise<vo
   const artifactRoot = join(temporary, 'artifact')
   const manifestPath = join(temporary, 'manifest.json')
   const commitment = await materializeExecutionArtifact(repoRoot, artifactRoot)
+  const parentAnchor = executionArtifactParentAnchor(commitment)
   await writeExecutionArtifactManifest(manifestPath, commitment)
   await verifyExecutionArtifact(artifactRoot, commitment)
   await lockExecutionArtifact(artifactRoot)
-  const productRoot = join(artifactRoot, 'products/mythos-agent')
-  const registerPath = join(productRoot, 'eval/snapshot-register.mjs')
-  const launcherPath = join(productRoot, 'eval/launch.ts')
+  const verifiedArtifactRoot = await realpath(artifactRoot)
+  const productRoot = join(verifiedArtifactRoot, 'products/mythos-agent')
+  const launcherPath = join(productRoot, '.mythos-eval-runtime/eval/launch.js')
+  const registerBytes = await readAnchoredArtifactFile(verifiedArtifactRoot, commitment,
+    'products/mythos-agent/eval/snapshot-register.mjs')
+  const loaderBytes = await readAnchoredArtifactFile(verifiedArtifactRoot, commitment,
+    'products/mythos-agent/eval/snapshot-loader.mjs')
+  const registerUrl = `data:text/javascript;base64,${registerBytes.toString('base64')}`
+  const loaderUrl = `data:text/javascript;base64,${loaderBytes.toString('base64')}`
   const command = ['tsx', 'eval/launch.ts', ...parameters].join(' ')
   const environment: NodeJS.ProcessEnv = { ...process.env, MYTHOS_EVAL_ARTIFACT_MANIFEST: manifestPath,
-    MYTHOS_EVAL_ARTIFACT_ROOT: artifactRoot, MYTHOS_EVAL_CANONICAL_COMMAND: command,
-    MYTHOS_EVAL_INVOCATION_JSON: JSON.stringify(parameters), NODE_OPTIONS: `--import=${pathToFileURL(registerPath).href}` }
+    MYTHOS_EVAL_ARTIFACT_ROOT: verifiedArtifactRoot, MYTHOS_EVAL_CANONICAL_COMMAND: command,
+    MYTHOS_EVAL_EXPECTED_ARTIFACT_SHA256: parentAnchor.artifactSha256,
+    MYTHOS_EVAL_EXPECTED_GIT_COMMIT: parentAnchor.gitCommit, MYTHOS_EVAL_EXPECTED_GIT_TREE: parentAnchor.gitTree,
+    MYTHOS_EVAL_EXPECTED_LOADER_SHA256: createHash('sha256').update(loaderBytes).digest('hex'),
+    MYTHOS_EVAL_INVOCATION_JSON: JSON.stringify(parameters), MYTHOS_EVAL_LOADER_DATA_URL: loaderUrl,
+    NODE_OPTIONS: `--import=${registerUrl}` }
   delete environment.NODE_PATH
-  const code = await childProcess(join(artifactRoot, 'node_modules/.bin/tsx'), [launcherPath, ...parameters], {
+  const code = await childProcess(process.execPath, [launcherPath, ...parameters], {
     cwd: productRoot,
     env: environment,
   })
-  process.stdout.write(`\n[Mythos Eval Artifact] ${artifactRoot}\n`)
+  process.stdout.write(`\n[Mythos Eval Artifact] ${verifiedArtifactRoot}\n`)
   if (code !== 0) process.exitCode = code
 }
 
