@@ -1,16 +1,21 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { lstat, readFile, realpath } from 'node:fs/promises'
-import { posix, relative, resolve, sep } from 'node:path'
+import { readFile, realpath } from 'node:fs/promises'
+import { relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import {
   evaluationEntryRegistry,
-  registryEntryIdsForCommitment,
+  parseEvaluationLaunchArguments,
   validateEvaluationRegistry,
   type EvaluationEntry,
   type EvaluationEntryId,
 } from './entry-registry.js'
-import { collectRelativeImportClosure, extractEvaluationEntryImports } from './import-closure.js'
+import {
+  commitExecutionSnapshot,
+  readExecutionArtifactManifest,
+  verifyExecutionArtifact,
+  type ExecutionArtifactCommitment,
+} from './execution-snapshot.js'
 
 export type { EvaluationEntry, EvaluationEntryId } from './entry-registry.js'
 
@@ -23,17 +28,8 @@ const knownOverlays = new Set([
 ])
 const knownTurnReasons = new Set(['aborted', 'blocked', 'completed', 'error', 'interrupted', 'max-tokens'])
 const supportedCurrencies = new Set(['USD'])
-const journeyWorkspaceImports = new Set([
-  '@deepseek-ai/dsh-agent/src/model-selection.ts', '@deepseek-ai/dsh-llm/message', '@deepseek-ai/dsh-session/types',
-])
 
 export type FailureCategory = 'model_failure' | 'harness_failure' | 'infrastructure_failure'
-
-const commonFiles = [
-  'package.json', 'home/profiles/mythos/cordis.yml', 'home/profiles/mythos/cordis.patch.yml',
-  'home/profiles/mythos/package.json', 'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts',
-  'eval/report-contract.ts', 'eval/session-metrics.ts', 'eval/workspace-modules.d.ts',
-] as const
 
 export interface ReportCase {
   agentIdleObserved?: boolean
@@ -52,6 +48,22 @@ export interface ReportCase {
   timedOut?: boolean
   tier?: string
   verification?: { passed?: boolean }
+}
+
+/** Compatibility helper for fixture construction; formal commitment always covers the complete Git tree. */
+export function implementationFiles(entry: EvaluationEntry, overlays: readonly string[] = []): string[] {
+  for (const overlay of overlays) {
+    if (!knownOverlays.has(overlay)) throw new Error('评测 overlay 不在中央已知集合')
+  }
+  const entryIds = [...evaluationEntryRegistry.entries()]
+    .filter(([, definition]) => definition.commitment === entry)
+    .map(([entryId]) => entryId)
+  return [...new Set([
+    'package.json', 'home/profiles/mythos/cordis.yml', 'home/profiles/mythos/cordis.patch.yml',
+    'home/profiles/mythos/package.json', 'eval/entry-registry.ts', 'eval/execution-snapshot.ts', 'eval/launch.ts',
+    'eval/report-contract.ts', 'eval/session-metrics.ts', 'eval/snapshot-loader.mjs', 'eval/snapshot-register.mjs',
+    ...entryIds.flatMap(entryId => evaluationEntryRegistry.get(entryId)!.internalDependencies), ...overlays,
+  ])].sort()
 }
 
 interface ProductManifest {
@@ -112,15 +124,6 @@ function projectMetrics(value: unknown): Record<string, unknown> | null {
   return projected
 }
 
-export function implementationFiles(entry: EvaluationEntry, overlays: readonly string[] = []): string[] {
-  for (const overlay of overlays) {
-    if (!knownOverlays.has(overlay)) throw new Error('评测 overlay 不在中央已知集合')
-  }
-  const dependencies = registryEntryIdsForCommitment(entry)
-    .flatMap(entryId => evaluationEntryRegistry.get(entryId)!.internalDependencies)
-  return [...new Set([...commonFiles, ...dependencies, ...overlays])].sort()
-}
-
 function resolveEvaluationEntryId(entry: EvaluationEntry, config: Readonly<Record<string, unknown>>): EvaluationEntryId {
   if (entry === 'qwen-local') return 'qwen-local'
   if (entry === 'real-repository') return 'real-repository'
@@ -132,16 +135,7 @@ function resolveEvaluationEntryId(entry: EvaluationEntry, config: Readonly<Recor
   return config.suite === 'all' ? 'comprehensive' : 'standard'
 }
 
-function implementationFilesForEntry(entryId: EvaluationEntryId, overlays: readonly string[] = []): string[] {
-  const entry = evaluationEntryRegistry.get(entryId)
-  if (entry === undefined) throw new Error('未知评测 entry ID')
-  for (const overlay of overlays) {
-    if (!knownOverlays.has(overlay)) throw new Error('评测 overlay 不在中央已知集合')
-  }
-  return [...new Set([...commonFiles, ...entry.internalDependencies, ...overlays])].sort()
-}
-
-async function trackedWorkspace(productRoot: string): Promise<{ productPrefix: string; trackedFiles: Set<string>; workspaceRoot: string }> {
+async function trackedWorkspace(productRoot: string): Promise<{ productPrefix: string; workspaceRoot: string }> {
   const { stdout: rootOutput } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], {
     cwd: productRoot, encoding: 'utf8',
   })
@@ -149,19 +143,7 @@ async function trackedWorkspace(productRoot: string): Promise<{ productPrefix: s
   const canonicalProductRoot = await realpath(productRoot)
   const productPrefix = relative(workspaceRoot, canonicalProductRoot).split(sep).join('/')
   if (productPrefix === '' || productPrefix.startsWith('../')) throw new Error('产品目录必须位于 Git workspace 内')
-  const { stdout: filesOutput } = await execFileAsync('git', ['ls-files', '--cached', '-z'], {
-    cwd: workspaceRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
-  })
-  return { productPrefix, trackedFiles: new Set(filesOutput.split('\0').filter(path => path !== '')), workspaceRoot }
-}
-
-async function readTrackedFile(workspaceRoot: string, path: string, trackedFiles: ReadonlySet<string>): Promise<Buffer> {
-  if (!trackedFiles.has(path)) throw new Error('评测 commitment 禁止读取 untracked 文件')
-  const absolute = resolve(workspaceRoot, path)
-  if (!absolute.startsWith(`${workspaceRoot}${sep}`)) throw new Error('评测 commitment 文件越出 workspace')
-  const information = await lstat(absolute)
-  if (!information.isFile()) throw new Error('评测 commitment 仅接受非符号链接普通文件')
-  return await readFile(absolute)
+  return { productPrefix, workspaceRoot }
 }
 
 function commitmentPath(workspacePath: string, productPrefix: string): string {
@@ -183,11 +165,28 @@ export async function evaluationCommitment(input: {
   overlays?: readonly string[]
   productRoot: string
 }): Promise<{
-  algorithm: 'sha256-v2'
+  algorithm: 'git-tree-sha256-v1'
+  artifact: null | {
+    algorithm: 'execution-artifact-sha256-v1'
+    build: ExecutionArtifactCommitment['build']
+    files: ExecutionArtifactCommitment['files']
+    mutableRoots: ExecutionArtifactCommitment['mutableRoots']
+    sha256: string
+  }
   entry: EvaluationEntry
   entryId: EvaluationEntryId
-  files: { path: string; sha256: string }[]
-  runtime: { endpoint: { algorithm: 'sha256'; sha256: string }; parametersSha256: string }
+  files: { mode: string; objectId: string; path: string; type: 'blob' | 'commit' }[]
+  runtime: {
+    command: string
+    cwd: string
+    artifactSha256: string | null
+    dependencyState: 'offline_artifact_verified' | 'offline_artifact_required'
+    endpoint: { algorithm: 'sha256'; sha256: string }
+    entrySummarySha256: string
+    environment: { keys: string[]; sha256: string }
+    parametersSha256: string
+  }
+  snapshot: { gitCommit: string; gitObjectFormat: 'sha1' | 'sha256'; gitTree: string; sha256: string }
   sha256: string
 }> {
   const productRoot = resolve(input.productRoot)
@@ -198,37 +197,59 @@ export async function evaluationCommitment(input: {
   const registryEntry = evaluationEntryRegistry.get(entryId)
   if (registryEntry === undefined || registryEntry.visibility !== 'public') throw new Error('未知或不可启动的评测 entry ID')
   if (registryEntry.commitment !== input.entry) throw new Error('评测 entry ID 与 commitment 归属不一致')
-  const explicitFiles = implementationFilesForEntry(entryId, input.overlays)
-  const { productPrefix, trackedFiles, workspaceRoot } = await trackedWorkspace(productRoot)
-  const productFiles = explicitFiles.map(path => posix.join(productPrefix, path))
-  const registryPath = posix.join(productPrefix, 'eval/entry-registry.ts')
-  const registrySource = (await readTrackedFile(workspaceRoot, registryPath, trackedFiles)).toString('utf8')
-  const entryImports = extractEvaluationEntryImports(registrySource)
-  if (entryImports.size !== evaluationEntryRegistry.size
-    || [...evaluationEntryRegistry.keys()].some(id => !entryImports.has(id))) {
-    throw new Error('runtime registry 与源码 entry loader 集合不一致')
+  for (const overlay of input.overlays ?? []) {
+    if (!knownOverlays.has(overlay)) throw new Error('评测 overlay 不在中央已知集合')
   }
-  const selectedImport = entryImports.get(entryId)
-  if (selectedImport === undefined) throw new Error('entry 缺少固定字面量 loader')
-  const closureRoots = productFiles.filter(path => path.endsWith('.ts'))
-  const importClosure = await collectRelativeImportClosure(workspaceRoot, closureRoots, {
-    allowedFiles: trackedFiles,
-    controlPathPrefix: `${productPrefix}/eval/`,
-    expectedDynamicImports: new Map([[registryPath, [...entryImports.values()]]]),
-    requiredDirectBareImports: new Map([
-      [posix.join(productPrefix, 'eval/journey-turn-runner.ts'), journeyWorkspaceImports],
-    ]),
-    selectedDynamicImports: new Map([[registryPath, new Set([selectedImport])]]),
-  })
-  const workspaceFiles = [...new Set([...productFiles, ...importClosure.files])].sort()
-  const files = await Promise.all(workspaceFiles.map(async path => {
-    const contents = await readTrackedFile(workspaceRoot, path, trackedFiles)
-    return { path: commitmentPath(path, productPrefix), sha256: createHash('sha256').update(contents).digest('hex') }
-  }))
+  let artifact: ExecutionArtifactCommitment | undefined
+  let workspaceRoot: string
+  let productPrefix: string
+  if (process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST !== undefined && process.env.MYTHOS_EVAL_ARTIFACT_ROOT !== undefined) {
+    artifact = await readExecutionArtifactManifest(process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST)
+    await verifyExecutionArtifact(process.env.MYTHOS_EVAL_ARTIFACT_ROOT, artifact)
+    workspaceRoot = await realpath(process.env.MYTHOS_EVAL_ARTIFACT_ROOT)
+    const canonicalProductRoot = await realpath(productRoot)
+    productPrefix = relative(workspaceRoot, canonicalProductRoot).split(sep).join('/')
+    if (productPrefix === '' || productPrefix.startsWith('../')) throw new Error('产品目录必须位于执行产物内')
+  } else ({ productPrefix, workspaceRoot } = await trackedWorkspace(productRoot))
+  const repository = artifact?.source ?? await commitExecutionSnapshot(workspaceRoot)
+  const files = repository.files.map(file => ({ ...file, path: commitmentPath(file.path, productPrefix) }))
+  const observedInvocation = artifact === undefined || process.env.MYTHOS_EVAL_INVOCATION_JSON === undefined
+    ? null : JSON.parse(process.env.MYTHOS_EVAL_INVOCATION_JSON) as unknown
+  if (Array.isArray(observedInvocation) && observedInvocation[0] !== entryId) {
+    throw new Error('实际执行 entry 与报告 commitment 不一致')
+  }
+  const caseIds = Array.isArray(parameters.caseIds)
+    ? parameters.caseIds.filter((value): value is string => typeof value === 'string') : []
+  const invocationParameters = Array.isArray(observedInvocation)
+    && observedInvocation.every(value => typeof value === 'string')
+    ? observedInvocation.slice(1) as string[]
+    : entryId === 'repeat' && parameters.suite === 'all' ? ['--suite', 'all', ...caseIds] : caseIds
+  parseEvaluationLaunchArguments([entryId, ...invocationParameters])
+  const command = ['tsx', 'eval/launch.ts', entryId, ...invocationParameters].join(' ')
+  const environmentValues = [...registryEntry.environment, ...(registryEntry.environmentDefaults ?? [])]
+    .sort(([left], [right]) => left.localeCompare(right))
+  const environment = { keys: environmentValues.map(([name]) => name),
+    sha256: createHash('sha256').update(canonical(environmentValues)).digest('hex') }
+  const entrySummary = {
+    command, commitment: registryEntry.commitment, entryId, environment,
+    internalDependencies: registryEntry.internalDependencies,
+    parameters: { caseIds: registryEntry.parameters.caseIds, options: [...registryEntry.parameters.options] },
+    visibility: registryEntry.visibility,
+  }
+  const runtime = {
+    artifactSha256: artifact?.sha256 ?? null, command, cwd: productPrefix,
+    dependencyState: artifact === undefined ? 'offline_artifact_required' as const : 'offline_artifact_verified' as const,
+    endpoint: endpointDigest, entrySummarySha256: createHash('sha256').update(canonical(entrySummary)).digest('hex'),
+    environment, parametersSha256: createHash('sha256').update(canonical(parameters)).digest('hex'),
+  }
+  const snapshot = { gitCommit: repository.gitCommit, gitObjectFormat: repository.gitObjectFormat,
+    gitTree: repository.gitTree, sha256: repository.sha256 }
   return {
-    algorithm: 'sha256-v2', entry: input.entry, entryId, files,
-    runtime: { endpoint: endpointDigest, parametersSha256: createHash('sha256').update(canonical(parameters)).digest('hex') },
-    sha256: createHash('sha256').update(canonical({ endpoint: endpointDigest, entry: input.entry, entryId, files, parameters })).digest('hex'),
+    algorithm: 'git-tree-sha256-v1', artifact: artifact === undefined ? null : {
+      algorithm: artifact.algorithm, build: artifact.build, files: artifact.files,
+      mutableRoots: artifact.mutableRoots, sha256: artifact.sha256,
+    }, entry: input.entry, entryId, files, runtime, snapshot,
+    sha256: createHash('sha256').update(canonical({ entry: input.entry, entryId, files, parameters, runtime, snapshot })).digest('hex'),
   }
 }
 
@@ -243,6 +264,14 @@ export async function sourceEvidence(repoRoot: string): Promise<{
   gitHead: string
   worktree: { trackedDirty: boolean; untrackedPresent: boolean }
 }> {
+  if (process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST !== undefined && process.env.MYTHOS_EVAL_ARTIFACT_ROOT !== undefined) {
+    const artifact = await readExecutionArtifactManifest(process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST)
+    await verifyExecutionArtifact(process.env.MYTHOS_EVAL_ARTIFACT_ROOT, artifact)
+    return {
+      dirtyDiff: { algorithm: 'sha256', scope: 'tracked-head-diff-only', sha256: createHash('sha256').update('').digest('hex') },
+      gitHead: artifact.source.gitCommit, worktree: { trackedDirty: false, untrackedPresent: false },
+    }
+  }
   const [gitHead, trackedStatus, untrackedNames, diff] = await Promise.all([
     git(repoRoot, ['rev-parse', 'HEAD']),
     git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=no']),
@@ -325,13 +354,21 @@ export function authoritativeCaseSemantics(_testCase: Record<string, unknown>): 
   return { accepted: false, capabilityEligible: false, failure: { category: 'harness_failure', reason: 'observability_gap' } }
 }
 
-function authoritativeReportFailures(cases: readonly Record<string, unknown>[], source: Record<string, unknown>): string[] {
+function authoritativeReportFailures(
+  cases: readonly Record<string, unknown>[],
+  source: Record<string, unknown>,
+  implementation: Record<string, unknown> = {},
+): string[] {
   const failures = ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete']
   if (cases.length === 0) failures.push('zero_cases')
   if (cases.some(testCase => testCase.passed !== true)) failures.push('case_failure')
   const worktree = record(source.worktree)
   if (worktree.trackedDirty === true) failures.push('tracked_source_dirty')
   if (worktree.untrackedPresent === true) failures.push('untracked_source_present')
+  if (implementation.algorithm === 'git-tree-sha256-v1'
+    && record(record(implementation).runtime).dependencyState !== 'offline_artifact_verified') {
+    failures.push('execution_snapshot_unverified')
+  }
   return failures
 }
 
@@ -370,7 +407,7 @@ export async function buildEvaluationReport(input: {
       entry: input.entry, overlays: input.overlays, productRoot: input.productRoot }),
   ])
   const cases = input.cases.map(projectCase)
-  const failures = authoritativeReportFailures(cases, source)
+  const failures = authoritativeReportFailures(cases, source, implementation)
   return {
     ...projectDraft(input.draft), acceptance: { failures, passed: false }, cases, implementation,
     modelIdentity: { requested: { model: safeString(input.requestedModel), provider: safeString(input.requestedProvider) },
@@ -426,7 +463,7 @@ export function parseEvaluationReport(value: unknown): Record<string, unknown> {
       if (testCase.accepted !== expected.accepted || testCase.capabilityEligible !== expected.capabilityEligible
         || canonical(testCase.failure) !== canonical(expected.failure)) throw new Error('v2 评测报告 case 派生语义不一致')
     }
-    const expectedFailures = authoritativeReportFailures(report.cases.map(record), source)
+    const expectedFailures = authoritativeReportFailures(report.cases.map(record), source, implementation)
     if (record(identity.server).status !== 'unknown_unverified' || acceptance.passed !== false || report.passed !== false
       || canonical(acceptance.failures) !== canonical(expectedFailures)) throw new Error('v2 评测报告 acceptance 派生语义不一致')
   }

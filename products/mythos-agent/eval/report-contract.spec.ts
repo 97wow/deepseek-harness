@@ -19,6 +19,7 @@ import {
   type ReportCase,
 } from './report-contract.js'
 import { evaluationEntryRegistry } from './entry-registry.js'
+import { materializeExecutionArtifact, writeExecutionArtifactManifest } from './execution-snapshot.js'
 
 const execFileAsync = promisify(execFile)
 const entries: EvaluationEntry[] = ['advanced-journey', 'journey', 'qwen-local', 'real-repository', 'standard']
@@ -136,192 +137,82 @@ describe('M3 + DSH 评测证据报告', () => {
     expect(JSON.stringify(report)).not.toContain('content-must-not-be-read')
   })
 
-  it('中央清单覆盖 Qwen 入口和 provider/model/endpoint/overlay/timeout/variant 设置逻辑', () => {
-    expect(implementationFiles('qwen-local')).toEqual(expect.arrayContaining([
-      'eval/run.ts', 'eval/options.ts', 'eval/overlays/qwen-local.yml',
-    ]))
-  })
-
-  it.each([...evaluationEntryRegistry.keys()])('%s registry entry 的每个关键文件变更都会改变 commitment', async entryId => {
-    const definition = evaluationEntryRegistry.get(entryId)!
+  it('commitment 绑定整个 tracked tree、lockfile、manifest、registry 与配置，但忽略未提交工作树正文', async () => {
     const { productRoot, repoRoot } = await fixture()
-    const overlays = definition.commitment === 'advanced-journey' ? ['eval/overlays/journey-subagent.yml'] : []
-    let previous = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 },
-      entry: definition.commitment, entryId, overlays, productRoot })
-    for (const file of previous.files.map(item => item.path)) {
-      await appendFile(commitmentFilePath(productRoot, repoRoot, file), '\n')
-      const nextCommitment = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 },
-        entry: definition.commitment, entryId, overlays, productRoot })
-      expect(nextCommitment.sha256, file).not.toBe(previous.sha256)
-      previous = nextCommitment
-    }
+    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', marker: 'a' },
+      entry: 'standard', entryId: 'standard', productRoot })
+    expect(first.files.map(file => file.path)).toEqual(expect.arrayContaining([
+      'eval/entry-registry.ts', 'eval/execution-snapshot.ts', 'workspace:package.json', 'workspace:pnpm-lock.yaml',
+    ]))
+    await writeFile(join(productRoot, 'eval/run.ts'), 'secret-uncommitted-body\n')
+    expect((await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', marker: 'a' },
+      entry: 'standard', entryId: 'standard', productRoot })).sha256).toBe(first.sha256)
+    expect(JSON.stringify(first)).not.toContain('secret-uncommitted-body')
+    await execFileAsync('git', ['add', 'product/eval/run.ts'], { cwd: repoRoot })
+    await execFileAsync('git', ['commit', '-qm', 'tracked change'], { cwd: repoRoot })
+    expect((await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', marker: 'a' },
+      entry: 'standard', entryId: 'standard', productRoot })).sha256).not.toBe(first.sha256)
   })
 
   it.each([...evaluationEntryRegistry.keys()])('%s 的结构化运行参数改变 commitment', async entryId => {
     const definition = evaluationEntryRegistry.get(entryId)!
     const { productRoot } = await fixture()
-    const first = await evaluationCommitment({ config: { caseIds: ['a'], endpoint: 'https://example.invalid/v1', marker: 'a' },
+    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', marker: 'a' },
       entry: definition.commitment, entryId, productRoot })
-    const second = await evaluationCommitment({ config: { caseIds: ['b'], endpoint: 'https://example.invalid/v1', marker: 'b' },
+    const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', marker: 'b' },
       entry: definition.commitment, entryId, productRoot })
     expect(second.runtime.parametersSha256).not.toBe(first.runtime.parametersSha256)
     expect(second.sha256).not.toBe(first.sha256)
   })
 
-  it('registry 显式覆盖内部 runner 与 launcher commitment', () => {
-    expect(evaluationEntryRegistry.get('journey')!.internalDependencies).toContain('eval/journey-turn-runner.ts')
-    expect(evaluationEntryRegistry.get('advanced-journey')!.internalDependencies).toContain('eval/journey-turn-runner.ts')
-    expect(evaluationEntryRegistry.get('journey-repeat')!.internalDependencies).toContain('eval/options.ts')
-    expect(evaluationEntryRegistry.get('advanced-journey-repeat')!.internalDependencies).toContain('eval/options.ts')
-    for (const entry of entries) {
-      expect(implementationFiles(entry)).toEqual(expect.arrayContaining([
-        'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts', 'package.json',
-      ]))
-    }
-  })
-
-  it.each([...evaluationEntryRegistry.keys()])('%s commitment 完成固定 launcher 与静态模块闭包验证', async entryId => {
-    const definition = evaluationEntryRegistry.get(entryId)!
-    const expectedSpecifier = fixtureEntryImports.find(([id]) => id === entryId)![1]
-    const expectedModule = `eval/${expectedSpecifier.slice(2, -3)}.ts`
-    const productRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-    const commitment = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: definition.commitment, entryId, productRoot })
-    expect(commitment.files.map(file => file.path)).toEqual(expect.arrayContaining([
-      'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts', expectedModule,
-    ]))
-    if (definition.commitment === 'journey' || definition.commitment === 'advanced-journey') {
-      expect(commitment.files.map(file => file.path)).toEqual(expect.arrayContaining([
-        'workspace:apps/cli/package.json', 'workspace:packages/core/agent/package.json',
-        'workspace:packages/core/agent/src/model-selection.ts', 'workspace:packages/core/session/package.json',
-        'workspace:packages/core/session/src/types.ts', 'workspace:packages/llm/llm/package.json',
-        'workspace:packages/llm/llm/src/message.ts',
-      ]))
-    }
-  })
-
-  it('新增相对 import 自动进入 commitment 且被导入文件变异改变 SHA', async () => {
+  it('工作树报告明确拒绝未验证离线执行产物', async () => {
     const { productRoot, repoRoot } = await fixture()
-    await writeFile(join(productRoot, 'eval/nested-commitment.ts'), 'export const marker = 1\n')
-    await writeFile(join(productRoot, 'eval/run.ts'), "import './nested-commitment.js'\n")
-    await execFileAsync('git', ['add', 'product/eval/nested-commitment.ts'], { cwd: repoRoot })
-    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'standard', entryId: 'standard', productRoot })
-    expect(first.files.map(file => file.path)).toContain('eval/nested-commitment.ts')
-    await writeFile(join(productRoot, 'eval/nested-commitment.ts'), 'export const marker = 2\n')
-    const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'standard', entryId: 'standard', productRoot })
-    expect(second.sha256).not.toBe(first.sha256)
+    const report = await reportInput(productRoot, repoRoot, [completeCase()])
+    expect(report.acceptance).toMatchObject({
+      failures: expect.arrayContaining(['execution_snapshot_unverified']), passed: false,
+    })
+    const implementation = report.implementation as { runtime: { dependencyState: string } }
+    expect(implementation.runtime.dependencyState).toBe('offline_artifact_required')
   })
 
-  it.each(['export * from', 'export { marker } from'])('%s 第四 workspace package 纳入源码闭包与 SHA', async syntax => {
-    const { productRoot, repoRoot } = await fixture()
-    const packageRoot = join(repoRoot, 'packages/extra/fourth')
-    await mkdir(join(packageRoot, 'src'), { recursive: true })
-    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
-      exports: { '.': { default: './lib/index.js' } }, name: '@deepseek-ai/dsh-fourth',
-    }))
-    await writeFile(join(packageRoot, 'src/index.ts'), 'export const marker = 1\n')
-    await writeFile(join(productRoot, 'eval/run.ts'), `${syntax} '@deepseek-ai/dsh-fourth'\n`)
-    await execFileAsync('git', ['add', 'packages/extra/fourth'], { cwd: repoRoot })
-    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'standard', entryId: 'standard', productRoot })
-    expect(first.files.map(file => file.path)).toContain('workspace:packages/extra/fourth/src/index.ts')
-    await writeFile(join(packageRoot, 'src/index.ts'), 'export const marker = 2\n')
-    const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'standard', entryId: 'standard', productRoot })
-    expect(second.sha256).not.toBe(first.sha256)
-  })
-
-  it('commitment 对 untracked 相对 import fail closed 且不回显正文', async () => {
-    const { productRoot } = await fixture()
-    await writeFile(join(productRoot, 'eval/untracked-sensitive.ts'), 'secret-user-body-must-not-leak\n')
-    await writeFile(join(productRoot, 'eval/run.ts'), "import './untracked-sensitive.js'\n")
-    let message = ''
+  it('报告绑定已离线重验的 artifact、cwd、commit、tree、command、entry 与 DSH identity', async () => {
+    const { repoRoot } = await fixture()
+    const temporary = await mkdtemp(join(tmpdir(), 'mythos-report-artifact-'))
+    const artifactRoot = join(temporary, 'artifact')
+    const manifestPath = join(temporary, 'manifest.json')
+    const artifact = await materializeExecutionArtifact(repoRoot, artifactRoot, undefined, {
+      async install(path) { await mkdir(join(path, 'node_modules'), { recursive: true }) },
+      async build() {},
+    })
+    await writeExecutionArtifactManifest(manifestPath, artifact)
+    const previous = {
+      manifest: process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST,
+      root: process.env.MYTHOS_EVAL_ARTIFACT_ROOT,
+      invocation: process.env.MYTHOS_EVAL_INVOCATION_JSON,
+    }
+    process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST = manifestPath
+    process.env.MYTHOS_EVAL_ARTIFACT_ROOT = artifactRoot
+    process.env.MYTHOS_EVAL_INVOCATION_JSON = JSON.stringify(['standard'])
     try {
-      await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-        entry: 'standard', entryId: 'standard', productRoot })
-    } catch (error) {
-      message = String(error)
+      const productRoot = join(artifactRoot, 'product')
+      const report = await reportInput(productRoot, artifactRoot, [completeCase()])
+      const implementation = report.implementation as Record<string, unknown>
+      const runtime = implementation.runtime as Record<string, unknown>
+      const snapshot = implementation.snapshot as Record<string, unknown>
+      expect(runtime).toMatchObject({ artifactSha256: artifact.sha256, command: 'tsx eval/launch.ts standard',
+        cwd: 'product', dependencyState: 'offline_artifact_verified' })
+      expect(implementation.entryId).toBe('standard')
+      expect(snapshot).toMatchObject({ gitCommit: artifact.source.gitCommit, gitTree: artifact.source.gitTree })
+      expect(report.source).toMatchObject({ dsh: { declaredCommit: 'dsh-commit', declaredVersion: '0.1.0-rc.8' },
+        gitHead: artifact.source.gitCommit })
+    } finally {
+      if (previous.manifest === undefined) delete process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST
+      else process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST = previous.manifest
+      if (previous.root === undefined) delete process.env.MYTHOS_EVAL_ARTIFACT_ROOT
+      else process.env.MYTHOS_EVAL_ARTIFACT_ROOT = previous.root
+      if (previous.invocation === undefined) delete process.env.MYTHOS_EVAL_INVOCATION_JSON
+      else process.env.MYTHOS_EVAL_INVOCATION_JSON = previous.invocation
     }
-    expect(message).toContain('无法解析')
-    expect(message).not.toContain('secret-user-body-must-not-leak')
-  })
-
-  it('journey workspace 静态依赖目标变更会改变 digest', async () => {
-    const { productRoot, repoRoot } = await fixture()
-    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'journey', entryId: 'journey', productRoot })
-    await appendFile(join(repoRoot, 'packages/core/agent/src/model-selection.ts'), '\nexport const changed = true\n')
-    const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'journey', entryId: 'journey', productRoot })
-    expect(second.sha256).not.toBe(first.sha256)
-  })
-
-  it.each([
-    '@deepseek-ai/dsh-agent/src/model-selection.ts',
-    '@deepseek-ai/dsh-llm/message',
-    '@deepseek-ai/dsh-session/types',
-  ])('journey 直接 workspace import 缺少 %s 时 fail closed', async removed => {
-    const { productRoot } = await fixture()
-    const imports = [
-      '@deepseek-ai/dsh-agent/src/model-selection.ts', '@deepseek-ai/dsh-llm/message', '@deepseek-ai/dsh-session/types',
-    ].filter(specifier => specifier !== removed)
-    await writeFile(join(productRoot, 'eval/journey-turn-runner.ts'), imports.map(specifier => `import '${specifier}'`).join('\n'))
-    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'journey', entryId: 'journey', productRoot })).rejects.toThrow('直接 workspace import 集合不一致')
-  })
-
-  it('本地 SessionId stub 不能替代直接 workspace package import', async () => {
-    const { productRoot } = await fixture()
-    await writeFile(join(productRoot, 'eval/journey-turn-runner.ts'), [
-      "import '@deepseek-ai/dsh-agent/src/model-selection.ts'", "import '@deepseek-ai/dsh-llm/message'",
-      "import { SessionId } from './session-id-stub.js'", 'void SessionId',
-    ].join('\n'))
-    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'journey', entryId: 'journey', productRoot })).rejects.toThrow('直接 workspace import 集合不一致')
-  })
-
-  it('standard loader 改为 repeat 会改变 AST 映射与 commitment', async () => {
-    const { productRoot } = await fixture()
-    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'standard', entryId: 'standard', productRoot })
-    const registryPath = join(productRoot, 'eval/entry-registry.ts')
-    const source = await readFile(registryPath, 'utf8')
-    const changed = source.replace(
-      "['standard', { load: async () => await import('./run.js') }],",
-      "['standard', { load: async () => await import('./repeat.js') }],",
-    )
-    expect(changed).not.toBe(source)
-    await writeFile(registryPath, changed)
-    const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'standard', entryId: 'standard', productRoot })
-    expect(second.sha256).not.toBe(first.sha256)
-    expect(second.files.map(file => file.path)).toContain('eval/repeat.ts')
-  })
-
-  it('registry loader 定义外的额外 dynamic import 使 commitment fail closed', async () => {
-    const { productRoot } = await fixture()
-    await appendFile(join(productRoot, 'eval/entry-registry.ts'), "\nvoid import('./run.js')\n")
-    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'standard', entryId: 'standard', productRoot })).rejects.toThrow('定义外 dynamic import')
-  })
-
-  it('registry 初始化后改写 entry.load 使 commitment fail closed', async () => {
-    const { productRoot } = await fixture()
-    await appendFile(join(productRoot, 'eval/entry-registry.ts'),
-      '\nevaluationEntryDefinitions[0][1].load = async () => undefined\n')
-    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'standard', entryId: 'standard', productRoot })).rejects.toThrow('初始化后改写 loader')
-  })
-
-  it('workspace package manifest 改写固定入口时 fail closed', async () => {
-    const { productRoot, repoRoot } = await fixture()
-    await writeFile(join(repoRoot, 'packages/core/agent/package.json'), JSON.stringify({
-      exports: { '.': { default: './lib/other.js' } }, name: '@deepseek-ai/dsh-agent',
-    }))
-    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
-      entry: 'journey', entryId: 'journey', productRoot })).rejects.toThrow()
   })
 
   it('endpoint commitment 对完整 URL 语义敏感并拒绝 userinfo', () => {

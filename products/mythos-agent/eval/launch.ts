@@ -1,6 +1,17 @@
-import { fileURLToPath } from 'node:url'
-import { resolve } from 'node:path'
+import { spawn } from 'node:child_process'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseEvaluationLaunchArguments, type EvaluationEntryId } from './entry-registry.js'
+import {
+  assertSnapshotRuntimePath,
+  lockExecutionArtifact,
+  materializeExecutionArtifact,
+  readExecutionArtifactManifest,
+  verifyExecutionArtifact,
+  writeExecutionArtifactManifest,
+} from './execution-snapshot.js'
 
 export type EvaluationExecutionHook = (entryId: EvaluationEntryId, load: () => Promise<unknown>) => Promise<void>
 
@@ -10,6 +21,60 @@ export interface EvaluationLaunchRuntime {
 }
 
 const executeEntry: EvaluationExecutionHook = async (_entryId, load) => { await load() }
+
+function childProcess(file: string, args: readonly string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<number> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(file, args, { ...options, stdio: 'inherit' })
+    child.once('error', reject)
+    child.once('exit', (code, signal) => {
+      if (signal !== null) reject(new Error(`执行快照进程被信号终止：${signal}`))
+      else resolvePromise(code ?? 1)
+    })
+  })
+}
+
+async function verifyFormalRuntime(parameters: readonly string[]): Promise<void> {
+  const manifestPath = process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST
+  const artifactRoot = process.env.MYTHOS_EVAL_ARTIFACT_ROOT
+  if (manifestPath === undefined || artifactRoot === undefined) throw new Error('正式评测缺少执行产物证据')
+  const commitment = await readExecutionArtifactManifest(manifestPath)
+  const verified = await verifyExecutionArtifact(artifactRoot, commitment)
+  await assertSnapshotRuntimePath(verified, fileURLToPath(import.meta.url))
+  const expectedProductRoot = resolve(artifactRoot, 'products/mythos-agent')
+  if (resolve(process.cwd()) !== expectedProductRoot) throw new Error('正式评测 cwd 不在已验证执行产物内')
+  const expectedCommand = ['tsx', 'eval/launch.ts', ...parameters].join(' ')
+  if (process.env.MYTHOS_EVAL_CANONICAL_COMMAND !== expectedCommand) throw new Error('正式评测 command 与预承诺不一致')
+  if (process.env.MYTHOS_EVAL_INVOCATION_JSON !== JSON.stringify(parameters)) throw new Error('正式评测参数与预承诺不一致')
+  process.env.MYTHOS_EVAL_ARTIFACT_SHA256 = commitment.sha256
+  process.env.MYTHOS_EVAL_GIT_COMMIT = commitment.source.gitCommit
+  process.env.MYTHOS_EVAL_GIT_TREE = commitment.source.gitTree
+}
+
+async function bootstrapFormalRuntime(parameters: readonly string[]): Promise<void> {
+  const currentProductRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+  const repoRoot = resolve(currentProductRoot, '..', '..')
+  const temporary = await mkdtemp(join(tmpdir(), 'mythos-eval-artifact-'))
+  const artifactRoot = join(temporary, 'artifact')
+  const manifestPath = join(temporary, 'manifest.json')
+  const commitment = await materializeExecutionArtifact(repoRoot, artifactRoot)
+  await writeExecutionArtifactManifest(manifestPath, commitment)
+  await verifyExecutionArtifact(artifactRoot, commitment)
+  await lockExecutionArtifact(artifactRoot)
+  const productRoot = join(artifactRoot, 'products/mythos-agent')
+  const registerPath = join(productRoot, 'eval/snapshot-register.mjs')
+  const launcherPath = join(productRoot, 'eval/launch.ts')
+  const command = ['tsx', 'eval/launch.ts', ...parameters].join(' ')
+  const environment: NodeJS.ProcessEnv = { ...process.env, MYTHOS_EVAL_ARTIFACT_MANIFEST: manifestPath,
+    MYTHOS_EVAL_ARTIFACT_ROOT: artifactRoot, MYTHOS_EVAL_CANONICAL_COMMAND: command,
+    MYTHOS_EVAL_INVOCATION_JSON: JSON.stringify(parameters), NODE_OPTIONS: `--import=${pathToFileURL(registerPath).href}` }
+  delete environment.NODE_PATH
+  const code = await childProcess(join(artifactRoot, 'node_modules/.bin/tsx'), [launcherPath, ...parameters], {
+    cwd: productRoot,
+    env: environment,
+  })
+  process.stdout.write(`\n[Mythos Eval Artifact] ${artifactRoot}\n`)
+  if (code !== 0) process.exitCode = code
+}
 
 export async function launchEvaluation(
   parameters: readonly string[],
@@ -27,4 +92,8 @@ export async function launchEvaluation(
 }
 
 const executedPath = process.argv[1] === undefined ? null : resolve(process.argv[1])
-if (executedPath === fileURLToPath(import.meta.url)) await launchEvaluation(process.argv.slice(2))
+if (executedPath === fileURLToPath(import.meta.url)) {
+  const parameters = process.argv.slice(2)
+  if (process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST === undefined) await bootstrapFormalRuntime(parameters)
+  else { await verifyFormalRuntime(parameters); await launchEvaluation(parameters) }
+}
