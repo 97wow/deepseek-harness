@@ -1,5 +1,7 @@
 export interface CohortSummary {
   cacheReadTokensMean: number
+  capabilityPassRate: number
+  capabilitySamples: number
   compactionSummariesMean: number
   durationMsP50: number
   durationMsP95: number
@@ -40,6 +42,8 @@ function mean(total: number, count: number): number {
 
 export function summarizeCohort(labels: readonly Record<string, unknown>[]): CohortSummary {
   let passed = 0
+  let capabilityPassed = 0
+  let capabilitySamples = 0
   let timedOut = 0
   let withRaw = 0
   let input = 0
@@ -60,7 +64,14 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
   for (const label of labels) {
     const testCase = record(label.case)
     const metrics = record(testCase.metrics)
-    if (testCase.passed === true) passed += 1
+    const failure = record(testCase.failure)
+    const isV2 = typeof testCase.accepted === 'boolean'
+    if ((isV2 ? testCase.accepted : testCase.passed) === true) passed += 1
+    const scoreable = !isV2 || testCase.passed === true || failure.category === 'model_failure'
+    if (scoreable) {
+      capabilitySamples += 1
+      if (testCase.passed === true) capabilityPassed += 1
+    }
     if (testCase.timedOut === true) timedOut += 1
     if (label.raw !== null && label.raw !== undefined) withRaw += 1
     input += number(metrics.inputTokens)
@@ -86,6 +97,8 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
   const samples = labels.length
   return {
     cacheReadTokensMean: mean(cache, samples),
+    capabilityPassRate: mean(capabilityPassed, capabilitySamples),
+    capabilitySamples,
     compactionSummariesMean: mean(compactionSummaries, samples),
     durationMsP50: quantile(durations, 0.5),
     durationMsP95: quantile(durations, 0.95),

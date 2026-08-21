@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { realRepoCases, installFutureTest } from './real-repo-cases.js'
 import { realRepoConfigurationSha256 } from './real-repo-configuration.js'
 import { readCompressedSessionMetrics } from './session-metrics.js'
+import { buildEvaluationReport } from './report-contract.js'
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(productRoot, '..', '..')
@@ -127,11 +128,34 @@ for (const testCase of chosen) {
 }
 const dsh = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')) as { version: string }
 const mythos = JSON.parse(await readFile(join(productRoot, 'package.json'), 'utf8')) as { version: string }
-const report = { baseline: { configurationSha256: await realRepoConfigurationSha256(productRoot, evalPatch), dshVersion: dsh.version,
+const draft = { baseline: { configurationSha256: await realRepoConfigurationSha256(productRoot, evalPatch), dshVersion: dsh.version,
   endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, mythosVersion: mythos.version, suite: 'real-repository', timeoutMs,
   variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
   cases, completedAt: new Date().toISOString(), model: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash', passed: cases.every(item => item.passed),
   profile: 'mythos', reportVersion: 1, runId: randomUUID(), startedAt }
+const report = await buildEvaluationReport({
+  cases,
+  commitment: {
+    config: { endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, selected: selected ?? null, suite: 'real-repository', timeoutMs, variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
+    files: [
+      'package.json',
+      'home/profiles/mythos/cordis.yml',
+      'home/profiles/mythos/cordis.patch.yml',
+      'home/profiles/mythos/package.json',
+      'eval/real-repo-cases.ts',
+      'eval/real-repo-configuration.ts',
+      'eval/report-contract.ts',
+      'eval/run-real-repo.ts',
+      'eval/session-metrics.ts',
+      ...(evalPatch ? [evalPatch] : []),
+    ],
+    productRoot,
+  },
+  draft,
+  repoRoot,
+  requestedModel: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',
+  requestedProvider: process.env.MYTHOS_EVAL_PROVIDER ?? 'deepseek',
+})
 await mkdir(join(productRoot, 'runs'), { recursive: true })
 const reportPath = join(productRoot, 'runs', `${startedAt.replaceAll(':', '-')}.json`)
 await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })

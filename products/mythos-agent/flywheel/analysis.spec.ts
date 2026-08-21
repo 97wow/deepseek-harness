@@ -15,6 +15,8 @@ describe('flywheel analysis', () => {
       { case: { durationMs: 30, metrics: { cacheReadTokens: 5, evidenceAfterMutation: false, failedToolResults: 0, inputTokens: 20, mutationCalls: 1, outputTokens: 4, steps: 3, toolCalls: { read: 2, write: 1 } }, passed: false, timedOut: true }, raw: null },
     ])).toEqual({
       cacheReadTokensMean: 4,
+      capabilityPassRate: 0.5,
+      capabilitySamples: 2,
       compactionSummariesMean: 0,
       durationMsP50: 10,
       durationMsP95: 30,
@@ -34,5 +36,15 @@ describe('flywheel analysis', () => {
       toolCallsMean: 2.5,
       turnsMean: 0,
     })
+  })
+
+  it('harness 与 infrastructure failure 不计入模型能力分，正式接受率 fail closed', () => {
+    const summary = summarizeCohort([
+      { case: { accepted: false, failure: { category: null }, passed: true }, raw: {} },
+      { case: { accepted: false, failure: { category: 'model_failure' }, passed: false }, raw: {} },
+      { case: { accepted: false, failure: { category: 'harness_failure' }, passed: false }, raw: {} },
+      { case: { accepted: false, failure: { category: 'infrastructure_failure' }, passed: false }, raw: {} },
+    ])
+    expect(summary).toMatchObject({ capabilityPassRate: 0.5, capabilitySamples: 2, passRate: 0 })
   })
 })

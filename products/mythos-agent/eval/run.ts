@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { selectEvaluationSuite, type EvaluationCase, type VerificationResult } from './cases.js'
 import { parseEvaluationModel, parseEvaluationTimeoutMs, parseReplayMetadata } from './options.js'
+import { buildEvaluationReport } from './report-contract.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
 
 interface CaseResult {
@@ -292,7 +293,7 @@ async function main(): Promise<void> {
     results.push(await runCase(testCase))
   }
 
-  const report: EvaluationReport = {
+  const draft: EvaluationReport = {
     baseline: {
       configurationSha256: configHash,
       dshVersion: String(dshManifest.version),
@@ -314,6 +315,34 @@ async function main(): Promise<void> {
     startedAt,
     totals: buildTotals(results),
   }
+  const report = await buildEvaluationReport({
+    cases: results,
+    commitment: {
+      config: {
+        endpoint: safeEndpoint(process.env.DEEPSEEK_BASE_URL),
+        suite: evaluationSuite,
+        timeoutMs: evaluationTimeoutMs,
+        variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default',
+      },
+      files: [
+        'package.json',
+        'home/profiles/mythos/cordis.yml',
+        'home/profiles/mythos/cordis.patch.yml',
+        'home/profiles/mythos/package.json',
+        'eval/cases.ts',
+        'eval/options.ts',
+        'eval/report-contract.ts',
+        'eval/run.ts',
+        'eval/session-metrics.ts',
+        ...(evalPatch ? [evalPatch] : []),
+      ],
+      productRoot,
+    },
+    draft,
+    repoRoot,
+    requestedModel: evaluationModel,
+    requestedProvider: process.env.MYTHOS_EVAL_PROVIDER ?? 'deepseek',
+  })
   const reportPath = join(productRoot, 'runs', `${startedAt.replaceAll(':', '-')}.json`)
   await mkdir(dirname(reportPath), { recursive: true })
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })

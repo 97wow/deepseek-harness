@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { journeyCases } from './journeys.js'
 import { journeyConfigurationSha256 } from './journey-configuration.js'
 import { readCompressedSessionMetrics } from './session-metrics.js'
+import { buildEvaluationReport } from './report-contract.js'
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(productRoot, '..', '..')
@@ -106,7 +107,7 @@ for (const testCase of journeyCases) {
 }
 const dsh = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')) as { version: string }
 const mythos = JSON.parse(await readFile(join(productRoot, 'package.json'), 'utf8')) as { version: string }
-const report = {
+const draft = {
   baseline: { configurationSha256: await journeyConfigurationSha256(productRoot), dshVersion: dsh.version, endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, mythosVersion: mythos.version, suite: 'journey', timeoutMs, variant: 'default' },
   cases,
   completedAt: new Date().toISOString(),
@@ -117,6 +118,30 @@ const report = {
   runId: randomUUID(),
   startedAt,
 }
+const report = await buildEvaluationReport({
+  cases,
+  commitment: {
+    config: { endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, suite: 'journey', timeoutMs, variant: 'default' },
+    files: [
+      'package.json',
+      'home/profiles/mythos/cordis.yml',
+      'home/profiles/mythos/cordis.patch.yml',
+      'home/profiles/mythos/package.json',
+      'eval/journey-configuration.ts',
+      'eval/journey-turn-runner.ts',
+      'eval/journeys.ts',
+      'eval/report-contract.ts',
+      'eval/run-journeys.ts',
+      'eval/session-metrics.ts',
+      'eval/overlays/journey.yml',
+    ],
+    productRoot,
+  },
+  draft,
+  repoRoot,
+  requestedModel: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',
+  requestedProvider: process.env.MYTHOS_EVAL_PROVIDER ?? 'deepseek',
+})
 await mkdir(join(productRoot, 'runs'), { recursive: true })
 const reportPath = join(productRoot, 'runs', `${startedAt.replaceAll(':', '-')}.json`)
 await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })

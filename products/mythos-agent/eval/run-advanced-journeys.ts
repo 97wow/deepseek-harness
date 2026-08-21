@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { advancedJourneyCases } from './advanced-journeys.js'
 import { advancedJourneyConfigurationSha256 } from './advanced-journey-configuration.js'
 import { readCompressedSessionMetrics } from './session-metrics.js'
+import { buildEvaluationReport } from './report-contract.js'
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(productRoot, '..', '..')
@@ -110,12 +111,38 @@ for (const testCase of chosenCases) {
 }
 const dsh = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')) as { version: string }
 const mythos = JSON.parse(await readFile(join(productRoot, 'package.json'), 'utf8')) as { version: string }
-const report = {
+const draft = {
   baseline: { configurationSha256: await advancedJourneyConfigurationSha256(productRoot), dshVersion: dsh.version,
     endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, mythosVersion: mythos.version, suite: 'advanced-journey', timeoutMs, variant: 'default' },
   cases, completedAt: new Date().toISOString(), model: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',
   passed: cases.every(testCase => testCase.passed), profile: 'mythos', reportVersion: 1, runId: randomUUID(), startedAt,
 }
+const advancedOverlays = [...new Set(chosenCases.map(testCase => `eval/overlays/journey-${testCase.overlay}.yml`))]
+const report = await buildEvaluationReport({
+  cases,
+  commitment: {
+    config: { endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, selected: selected ?? null, suite: 'advanced-journey', timeoutMs, variant: 'default' },
+    files: [
+      'package.json',
+      'home/profiles/mythos/cordis.yml',
+      'home/profiles/mythos/cordis.patch.yml',
+      'home/profiles/mythos/package.json',
+      'eval/advanced-journey-configuration.ts',
+      'eval/advanced-journeys.ts',
+      'eval/journey-turn-runner.ts',
+      'eval/report-contract.ts',
+      'eval/run-advanced-journeys.ts',
+      'eval/session-metrics.ts',
+      'eval/overlays/journey.yml',
+      ...advancedOverlays,
+    ],
+    productRoot,
+  },
+  draft,
+  repoRoot,
+  requestedModel: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',
+  requestedProvider: process.env.MYTHOS_EVAL_PROVIDER ?? 'deepseek',
+})
 await mkdir(join(productRoot, 'runs'), { recursive: true })
 const reportPath = join(productRoot, 'runs', `${startedAt.replaceAll(':', '-')}.json`)
 await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
