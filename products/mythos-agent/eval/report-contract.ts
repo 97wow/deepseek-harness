@@ -28,12 +28,13 @@ const entryFiles: Readonly<Record<EvaluationEntry, readonly string[]>> = {
     'eval/repeat-advanced-journeys.ts', 'eval/run-advanced-journeys.ts', 'eval/overlays/journey.yml',
   ],
   journey: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts', 'eval/repeat-journeys.ts', 'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
-  'qwen-local': ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/run-qwen-local.ts', 'eval/repeat.ts', 'eval/overlays/qwen-local.yml'],
+  'qwen-local': ['eval/cases.ts', 'eval/options.ts', 'eval/qwen-local-benchmark.ts', 'eval/run.ts', 'eval/run-qwen-local.ts', 'eval/repeat.ts', 'eval/overlays/qwen-local.yml'],
   'real-repository': ['eval/real-repo-cases.ts', 'eval/real-repo-configuration.ts', 'eval/run-real-repo.ts'],
   standard: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/run-comprehensive.ts', 'eval/repeat.ts'],
 }
 
 export const evaluationEntrypoints: Readonly<Record<string, EvaluationEntry>> = {
+  'qwen-local-benchmark.ts': 'qwen-local',
   'repeat-advanced-journeys.ts': 'advanced-journey',
   'repeat-journeys.ts': 'journey',
   'repeat.ts': 'standard',
@@ -43,6 +44,10 @@ export const evaluationEntrypoints: Readonly<Record<string, EvaluationEntry>> = 
   'run-qwen-local.ts': 'qwen-local',
   'run-real-repo.ts': 'real-repository',
   'run.ts': 'standard',
+}
+
+export const internalEvaluationModules: Readonly<Record<string, readonly EvaluationEntry[]>> = {
+  'journey-turn-runner.ts': ['advanced-journey', 'journey'],
 }
 
 export interface ReportCase {

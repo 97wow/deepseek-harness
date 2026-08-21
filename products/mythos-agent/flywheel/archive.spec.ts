@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -40,6 +40,15 @@ async function writeReport(
 }
 
 describe('archiveFlywheel', () => {
+  it('空归档经过读取与正式 gate 后仍 fail closed', async () => {
+    const options = await fixture()
+    await expect(archiveFlywheel(options)).resolves.toEqual({ rawSessions: 0, samples: 0 })
+    const labels = await readArchivedLabels(options.outputRoot)
+    expect(labels).toEqual([])
+    expect(evaluateReleaseGate(labels, { caseIds: ['case'], cohortPrefix: 'd:m:c:v', maxDurationMsP95: 100, minSamples: 1 }))
+      .toMatchObject({ passed: false, failures: [expect.stringContaining('insufficient_evidence')] })
+  })
+
   it('幂等归档完整原件并保留无原件的失败标签', async () => {
     const options = await fixture()
     const source = join(options.sessionsRoot, 'case', 'session.jsonl.zstd')
@@ -57,8 +66,8 @@ describe('archiveFlywheel', () => {
     const index = (await readFile(join(options.outputRoot, 'index.jsonl'), 'utf8'))
       .trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
     expect(index).toMatchObject([
-      { caseId: 'success', hasRaw: true, passed: false },
-      { caseId: 'timeout', hasRaw: false, passed: false },
+      { caseId: 'success', label: { path: expect.any(String), sha256: expect.any(String) }, raw: { path: expect.any(String), sha256: expect.any(String) }, report: { path: expect.any(String), sha256: expect.any(String) } },
+      { caseId: 'timeout', raw: null },
     ])
     const label = JSON.parse(await readFile(join(options.outputRoot, 'runs', 'run-1', 'success', 'label.json'), 'utf8')) as Record<string, unknown>
     expect(label).toMatchObject({ evidenceStatus: 'legacy_unverified', case: { accepted: false, failure: { category: 'harness_failure' } } })
@@ -147,5 +156,78 @@ describe('archiveFlywheel', () => {
       passed = false
     }
     expect(passed).toBe(false)
+  })
+
+  it.each(['label', 'raw', 'report', 'index'] as const)('读取时拒绝独立篡改的 %s 内容', async target => {
+    const options = await fixture()
+    const source = join(options.sessionsRoot, 'case', 'session.jsonl.zstd')
+    await mkdir(join(options.sessionsRoot, 'case'))
+    await writeFile(source, 'raw')
+    await writeReport(options, [{ id: 'case', passed: true, rawSession: relative(options.productRoot, source) }])
+    await archiveFlywheel(options)
+    const indexPath = join(options.outputRoot, 'index.jsonl')
+    const rows = (await readFile(indexPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    const row = rows[0]!
+    if (target === 'label') {
+      const reference = row.label as { path: string }
+      await writeFile(join(options.outputRoot, reference.path), 'modified-label')
+    } else if (target === 'raw') {
+      const reference = row.raw as { path: string }
+      await writeFile(join(options.outputRoot, reference.path), 'modified-raw')
+    } else if (target === 'report') {
+      const reference = row.report as { path: string }
+      await writeFile(join(options.outputRoot, reference.path), 'modified-report')
+    } else {
+      row.caseId = 'other-case'
+      await writeFile(indexPath, `${JSON.stringify(row)}\n`)
+    }
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow()
+  })
+
+  it.each(['label', 'raw'] as const)('读取时拒绝两个 case 的 %s 路径与 digest 交叉交换', async target => {
+    const options = await fixture()
+    const firstRaw = join(options.sessionsRoot, 'a', 'session.jsonl.zstd')
+    const secondRaw = join(options.sessionsRoot, 'b', 'session.jsonl.zstd')
+    await mkdir(join(options.sessionsRoot, 'a'))
+    await mkdir(join(options.sessionsRoot, 'b'))
+    await writeFile(firstRaw, 'a')
+    await writeFile(secondRaw, 'b')
+    await writeReport(options, [
+      { id: 'case-a', passed: true, rawSession: relative(options.productRoot, firstRaw) },
+      { id: 'case-b', passed: true, rawSession: relative(options.productRoot, secondRaw) },
+    ])
+    await archiveFlywheel(options)
+    const indexPath = join(options.outputRoot, 'index.jsonl')
+    const rows = (await readFile(indexPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    const first = rows[0]!
+    const second = rows[1]!
+    const reference = first[target]
+    first[target] = second[target]
+    second[target] = reference
+    await writeFile(indexPath, `${rows.map(row => JSON.stringify(row)).join('\n')}\n`)
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow('绑定不一致')
+  })
+
+  it.each(['/absolute/label.json', '../escape.json'])('读取时拒绝不安全归档路径 %s', async unsafe => {
+    const options = await fixture()
+    await writeReport(options, [{ id: 'case', passed: true }])
+    await archiveFlywheel(options)
+    const indexPath = join(options.outputRoot, 'index.jsonl')
+    const row = JSON.parse((await readFile(indexPath, 'utf8')).trim()) as Record<string, unknown>
+    row.label = { ...(row.label as object), path: unsafe }
+    await writeFile(indexPath, `${JSON.stringify(row)}\n`)
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow('路径')
+  })
+
+  it('读取时拒绝 dataRoot 内的符号链接重解析', async () => {
+    const options = await fixture()
+    await writeReport(options, [{ id: 'case', passed: true }])
+    await archiveFlywheel(options)
+    const row = JSON.parse((await readFile(join(options.outputRoot, 'index.jsonl'), 'utf8')).trim()) as Record<string, unknown>
+    const labelPath = join(options.outputRoot, (row.label as { path: string }).path)
+    const realLabel = `${labelPath}.real`
+    await rename(labelPath, realLabel)
+    await symlink(realLabel, labelPath)
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow('符号链接')
   })
 })

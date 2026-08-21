@@ -1,6 +1,5 @@
-import { readFile } from 'node:fs/promises'
-import { resolve, sep } from 'node:path'
 import { summarizeByCohort } from './analysis.js'
+export { readArchivedLabels } from './archive.js'
 
 export interface GateCriteria {
   caseIds: readonly string[]
@@ -23,16 +22,28 @@ export function evaluateReleaseGate(
   labels: readonly Record<string, unknown>[],
   criteria: GateCriteria,
 ): GateResult {
-  const cohorts = summarizeByCohort(labels)
   const failures: string[] = []
-  for (const caseId of criteria.caseIds) {
+  const validLabels = Array.isArray(labels) ? labels : []
+  const caseIds = Array.isArray(criteria.caseIds)
+    ? criteria.caseIds.map(caseId => typeof caseId === 'string' ? caseId.trim() : '')
+    : []
+  if (validLabels.length === 0) failures.push('insufficient_evidence: 归档为空')
+  if (caseIds.length === 0) failures.push('policy_invalid: caseIds 为空')
+  if (!Number.isSafeInteger(criteria.minSamples) || criteria.minSamples <= 0) failures.push('policy_invalid: minSamples 必须为正整数')
+  if (caseIds.some(caseId => caseId === '')) failures.push('policy_invalid: case ID 为空')
+  if (new Set(caseIds).size !== caseIds.length) failures.push('policy_invalid: case ID 重复')
+  if (typeof criteria.cohortPrefix !== 'string' || criteria.cohortPrefix.trim() === '') failures.push('policy_invalid: cohortPrefix 为空')
+  if (failures.some(failure => failure.startsWith('policy_invalid')) || validLabels.length === 0) return { failures, passed: false }
+  const cohorts = summarizeByCohort(validLabels)
+  if (Object.keys(cohorts).length === 0) return { failures: [...failures, 'insufficient_evidence: 无有效 cohort'], passed: false }
+  for (const caseId of caseIds) {
     const summary = cohorts[`${criteria.cohortPrefix}:${caseId}`]
     if (!summary) {
-      failures.push(`${caseId}: 缺少当前配置 cohort`)
+      failures.push(`insufficient_evidence: ${caseId}: 缺少当前配置 cohort`)
       continue
     }
     if (summary.samples < criteria.minSamples) {
-      failures.push(`${caseId}: 样本 ${summary.samples}/${criteria.minSamples}`)
+      failures.push(`insufficient_evidence: ${caseId}: 样本 ${summary.samples}/${criteria.minSamples}`)
     }
     if (summary.passRate !== 1) failures.push(`${caseId}: 通过率 ${summary.passRate}`)
     if (summary.timeoutRate !== 0) failures.push(`${caseId}: 超时率 ${summary.timeoutRate}`)
@@ -61,16 +72,4 @@ export function evaluateReleaseGate(
     }
   }
   return { failures, passed: failures.length === 0 }
-}
-
-export async function readArchivedLabels(dataRoot: string): Promise<Record<string, unknown>[]> {
-  const root = resolve(dataRoot)
-  const index = (await readFile(resolve(root, 'index.jsonl'), 'utf8'))
-    .split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
-  return await Promise.all(index.map(async row => {
-    if (typeof row.label !== 'string') throw new Error('飞轮索引缺少 label 路径')
-    const path = resolve(root, row.label)
-    if (!path.startsWith(`${root}${sep}`)) throw new Error('飞轮 label 路径越界')
-    return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
-  }))
 }

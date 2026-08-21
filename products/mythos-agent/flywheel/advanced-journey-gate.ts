@@ -14,6 +14,7 @@ const labels = await readArchivedLabels(join(productRoot, 'flywheel', 'data'))
 const cohortPrefix = [dsh.version, mythos.version, await advancedJourneyConfigurationSha256(productRoot), 'default'].join(':')
 const minSamples = parseEvaluationRepetitions(process.env.MYTHOS_EVAL_REPETITIONS)
 const failures: string[] = []
+if (advancedJourneyCases.length === 0) failures.push('policy_invalid: advancedJourneyCases 为空')
 for (const testCase of advancedJourneyCases) {
   const result = evaluateReleaseGate(labels, {
     caseIds: [testCase.id], cohortPrefix, maxDurationMsP95: 900_000,

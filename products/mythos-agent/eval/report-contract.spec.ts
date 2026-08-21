@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { dirname, join } from 'node:path'
-import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +11,7 @@ import {
   endpointCommitment,
   evaluationCommitment,
   evaluationEntrypoints,
+  internalEvaluationModules,
   implementationFiles,
   parseEvaluationReport,
   sourceEvidence,
@@ -102,10 +103,20 @@ describe('M3 + DSH 评测证据报告', () => {
     }
   })
 
-  it('公开 runner 命名集合与中央入口注册表完全一致', async () => {
-    const files = (await readdir(dirname(fileURLToPath(import.meta.url))))
-      .filter(name => /^(?:run|repeat)(?:-[a-z]+)*\.ts$/u.test(name)).sort()
-    expect(Object.keys(evaluationEntrypoints).sort()).toEqual(files)
+  it('package scripts 的公开 eval 入口与中央注册表双向一致', async () => {
+    const manifest = JSON.parse(await readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
+    const files = Object.values(manifest.scripts).flatMap(command => [...command.matchAll(/\btsx\s+eval\/([a-z0-9-]+\.ts)\b/gu)]
+      .map(match => match[1]!)).sort()
+    expect(Object.keys(evaluationEntrypoints).sort()).toEqual([...new Set(files)])
+    expect(evaluationEntrypoints['qwen-local-benchmark.ts']).toBe('qwen-local')
+  })
+
+  it('内部非公开 runner 显式声明全部 commitment 归属', () => {
+    for (const [filename, owners] of Object.entries(internalEvaluationModules)) {
+      for (const owner of owners) expect(implementationFiles(owner)).toContain(`eval/${filename}`)
+    }
   })
 
   it('endpoint commitment 对完整 URL 语义敏感并拒绝 userinfo', () => {

@@ -28,7 +28,24 @@ describe('evaluateReleaseGate', () => {
     expect(evaluateReleaseGate(labels, criteria)).toMatchObject({ passed: false })
   })
 
-  it('缺少目标 cohort 时 fail closed', () => {
-    expect(evaluateReleaseGate([], criteria)).toEqual({ failures: ['case: 缺少当前配置 cohort'], passed: false })
+  it('空归档以 insufficient_evidence fail closed', () => {
+    expect(evaluateReleaseGate([], criteria)).toEqual({ failures: ['insufficient_evidence: 归档为空'], passed: false })
+  })
+
+  it.each([
+    [{ ...criteria, caseIds: [] }, 'caseIds 为空'],
+    [{ ...criteria, caseIds: [''] }, 'case ID 为空'],
+    [{ ...criteria, caseIds: ['case', 'case'] }, 'case ID 重复'],
+    [{ ...criteria, minSamples: 0 }, 'minSamples'],
+    [{ ...criteria, minSamples: -1 }, 'minSamples'],
+  ])('非法或空策略 %# 返回 policy_invalid', (invalid, reason) => {
+    const result = evaluateReleaseGate([label(1, { passed: true })], invalid)
+    expect(result.passed).toBe(false)
+    expect(result.failures.join('\n')).toContain(`policy_invalid: ${reason}`)
+  })
+
+  it('无有效目标 cohort 返回 insufficient_evidence', () => {
+    const result = evaluateReleaseGate([label(1, { passed: true })], { ...criteria, cohortPrefix: 'missing' })
+    expect(result).toMatchObject({ passed: false, failures: [expect.stringContaining('insufficient_evidence')] })
   })
 })
