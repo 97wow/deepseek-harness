@@ -10,5 +10,14 @@ function run(script: string): void {
   if (result.status !== 0) throw new Error(`pnpm ${script} 失败，退出码 ${String(result.status)}`)
 }
 
-for (const script of ['test', 'typecheck', 'smoke:web', 'flywheel:build', 'flywheel:analyze', 'gate', 'release:check']) run(script)
+for (const script of [
+  'test',
+  'typecheck',
+  'smoke:web',
+  'flywheel:build',
+  'flywheel:analyze',
+  'gate',
+  'gate:comprehensive',
+  'release:check',
+]) run(script)
 process.stdout.write('Mythos release verify: 全部门禁通过\n')

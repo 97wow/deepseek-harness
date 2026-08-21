@@ -5,13 +5,17 @@ const healthy = {
   cacheReadTokensMean: 0,
   durationMsP50: 10,
   durationMsP95: 20,
+  evidenceAfterMutationRate: 1,
+  failedToolResultsMean: 0,
   inputTokensMean: 1,
+  mutationCallsMean: 1,
   outputTokensMean: 1,
   passRate: 1,
   rawCoverage: 1,
   samples: 3,
   stepsMean: 1,
   timeoutRate: 0,
+  toolCallsMean: 2,
 }
 
 describe('evaluateReleaseGate', () => {
@@ -26,13 +30,20 @@ describe('evaluateReleaseGate', () => {
       'current:case': {
         ...healthy,
         durationMsP95: 101,
+        evidenceAfterMutationRate: 0.5,
         passRate: 0.5,
         rawCoverage: 0.5,
         samples: 2,
         timeoutRate: 0.5,
       },
-    }, { caseIds: ['case', 'missing'], cohortPrefix: 'current', maxDurationMsP95: 100, minSamples: 3 })
+    }, {
+      caseIds: ['case', 'missing'],
+      cohortPrefix: 'current',
+      maxDurationMsP95: 100,
+      minEvidenceAfterMutationRate: 1,
+      minSamples: 3,
+    })
     expect(result.passed).toBe(false)
-    expect(result.failures).toHaveLength(6)
+    expect(result.failures).toHaveLength(7)
   })
 })

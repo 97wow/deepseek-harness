@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { releaseEvaluationCases } from '../eval/cases.js'
+import { evaluationCases } from '../eval/cases.js'
+import { parseEvaluationRepetitions } from '../eval/options.js'
 import type { CohortSummary } from './analysis.js'
 import { evaluateReleaseGate } from './gate-policy.js'
 
@@ -21,11 +22,13 @@ const comparison = JSON.parse(
   await readFile(join(productRoot, 'flywheel', 'data', 'comparison.json'), 'utf8'),
 ) as { cohorts: Record<string, CohortSummary> }
 const cohortPrefix = [dsh.version, mythos.version, configurationSha256, 'default'].join(':')
+const minSamples = parseEvaluationRepetitions(process.env.MYTHOS_EVAL_REPETITIONS)
 const result = evaluateReleaseGate(comparison.cohorts, {
-  caseIds: releaseEvaluationCases.map(testCase => testCase.id),
+  caseIds: evaluationCases.map(testCase => testCase.id),
   cohortPrefix,
-  maxDurationMsP95: 300_000,
-  minSamples: 3,
+  maxDurationMsP95: 600_000,
+  minEvidenceAfterMutationRate: 1,
+  minSamples,
 })
-process.stdout.write(`${JSON.stringify({ cohortPrefix, ...result }, null, 2)}\n`)
+process.stdout.write(`${JSON.stringify({ cohortPrefix, minSamples, ...result }, null, 2)}\n`)
 if (!result.passed) process.exitCode = 1

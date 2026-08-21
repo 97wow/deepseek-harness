@@ -15,6 +15,8 @@
     "agent": "tsx product/launch.ts headless",
     "bench:qwen-local": "tsx eval/qwen-local-benchmark.ts",
     "eval": "tsx eval/run.ts",
+    "eval:comprehensive": "tsx eval/run-comprehensive.ts",
+    "eval:comprehensive:repeat": "MYTHOS_EVAL_SUITE=all tsx eval/repeat.ts",
     "eval:qwen-local": "tsx eval/run-qwen-local.ts",
     "eval:repeat": "tsx eval/repeat.ts",
     "flywheel:analyze": "tsx flywheel/analyze.ts",
@@ -24,12 +26,13 @@
     "flywheel:server:import": "tsx flywheel/server-import.ts",
     "flywheel:session:curate": "tsx flywheel/session-curate.ts",
     "gate": "tsx flywheel/gate.ts",
+    "gate:comprehensive": "tsx flywheel/comprehensive-gate.ts",
     "release:check": "tsx release/check.ts",
     "release:pack": "tsx release/pack.ts",
     "release:verify": "tsx release/verify.ts",
     "smoke:web": "tsx product/smoke-web.ts",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/run-qwen-local.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts",
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/run.ts eval/run-comprehensive.ts eval/run-qwen-local.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/comprehensive-gate.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts",
     "web": "tsx product/launch.ts web"
   },
   "dependencies": {

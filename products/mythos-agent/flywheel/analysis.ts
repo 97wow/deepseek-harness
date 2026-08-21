@@ -2,13 +2,17 @@ export interface CohortSummary {
   cacheReadTokensMean: number
   durationMsP50: number
   durationMsP95: number
+  evidenceAfterMutationRate: number
+  failedToolResultsMean: number
   inputTokensMean: number
+  mutationCallsMean: number
   outputTokensMean: number
   passRate: number
   rawCoverage: number
   samples: number
   stepsMean: number
   timeoutRate: number
+  toolCallsMean: number
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -36,7 +40,12 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
   let input = 0
   let output = 0
   let cache = 0
+  let evidenceAfterMutation = 0
+  let failedToolResults = 0
+  let mutationCalls = 0
+  let mutationSamples = 0
   let steps = 0
+  let toolCalls = 0
   const durations: number[] = []
   for (const label of labels) {
     const testCase = record(label.case)
@@ -47,7 +56,16 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
     input += number(metrics.inputTokens)
     output += number(metrics.outputTokens)
     cache += number(metrics.cacheReadTokens)
+    failedToolResults += number(metrics.failedToolResults)
+    const sampleMutations = number(metrics.mutationCalls)
+    mutationCalls += sampleMutations
+    if (sampleMutations > 0) {
+      mutationSamples += 1
+      if (metrics.evidenceAfterMutation === true) evidenceAfterMutation += 1
+    }
     steps += number(metrics.steps)
+    toolCalls += Object.values(record(metrics.toolCalls))
+      .reduce<number>((total, value) => total + number(value), 0)
     durations.push(number(testCase.durationMs))
   }
   const samples = labels.length
@@ -55,13 +73,17 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
     cacheReadTokensMean: mean(cache, samples),
     durationMsP50: quantile(durations, 0.5),
     durationMsP95: quantile(durations, 0.95),
+    evidenceAfterMutationRate: mutationSamples === 0 ? 1 : mean(evidenceAfterMutation, mutationSamples),
+    failedToolResultsMean: mean(failedToolResults, samples),
     inputTokensMean: mean(input, samples),
+    mutationCallsMean: mean(mutationCalls, samples),
     outputTokensMean: mean(output, samples),
     passRate: mean(passed, samples),
     rawCoverage: mean(withRaw, samples),
     samples,
     stepsMean: mean(steps, samples),
     timeoutRate: mean(timedOut, samples),
+    toolCallsMean: mean(toolCalls, samples),
   }
 }
 

@@ -2,7 +2,10 @@ import { execFileSync } from 'node:child_process'
 
 export interface SessionMetrics {
   cacheReadTokens: number
+  evidenceAfterMutation: boolean
+  failedToolResults: number
   inputTokens: number
+  mutationCalls: number
   outputTokens: number
   steps: number
   toolCalls: Record<string, number>
@@ -20,10 +23,24 @@ function asFiniteNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
+function containsObservedFailure(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return /(?:^|[\n[])exit(?: code)?(?:\s*[:=]|\s+)\s*[1-9]\d*(?:\]|\n|$)/i.test(value)
+  }
+  if (Array.isArray(value)) return value.some(containsObservedFailure)
+  const item = asRecord(value)
+  if (!item) return false
+  if (item.isError === true) return true
+  return Object.values(item).some(containsObservedFailure)
+}
+
 export function parseSessionJsonl(jsonl: string): SessionMetrics {
   const metrics: SessionMetrics = {
     cacheReadTokens: 0,
+    evidenceAfterMutation: false,
+    failedToolResults: 0,
     inputTokens: 0,
+    mutationCalls: 0,
     outputTokens: 0,
     steps: 0,
     toolCalls: {},
@@ -64,11 +81,22 @@ export function parseSessionJsonl(jsonl: string): SessionMetrics {
     if (type === 'tool/call') {
       const name = typeof data?.name === 'string' ? data.name : 'unknown'
       metrics.toolCalls[name] = (metrics.toolCalls[name] ?? 0) + 1
+      if (name === 'write' || name === 'edit') {
+        metrics.mutationCalls += 1
+        metrics.evidenceAfterMutation = false
+      } else if (metrics.mutationCalls > 0 && (name === 'bash' || name === 'read')) {
+        metrics.evidenceAfterMutation = true
+      }
       continue
     }
 
     if (type === 'tool/result') {
       metrics.toolResults += 1
+      const message = asRecord(data?.message)
+      const content = Array.isArray(message?.content) ? message.content : []
+      if (content.some(containsObservedFailure)) {
+        metrics.failedToolResults += 1
+      }
       continue
     }
 

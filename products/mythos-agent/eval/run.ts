@@ -4,11 +4,13 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { selectEvaluationCases, type EvaluationCase, type VerificationResult } from './cases.js'
+import { selectEvaluationSuite, type EvaluationCase, type VerificationResult } from './cases.js'
 import { parseEvaluationModel, parseEvaluationTimeoutMs, parseReplayMetadata } from './options.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
 
 interface CaseResult {
+  behaviorVerification: VerificationResult
+  dimensions: readonly string[]
   durationMs: number
   id: string
   metricsError?: string
@@ -17,6 +19,7 @@ interface CaseResult {
   processExitCode: number
   rawSession?: string
   timedOut: boolean
+  tier: EvaluationCase['tier']
   verification: VerificationResult
 }
 
@@ -27,6 +30,7 @@ interface EvaluationReport {
     endpoint: string
     mythosVersion: string
     overlaySha256?: string
+    suite: string
     timeoutMs: number
     variant: string
   }
@@ -45,7 +49,9 @@ interface EvaluationReport {
   totals: {
     cacheReadTokens: number
     durationMs: number
+    failedToolResults: number
     inputTokens: number
+    mutationCalls: number
     outputTokens: number
     steps: number
     toolCalls: Record<string, number>
@@ -62,6 +68,7 @@ const evalPatch = process.env.MYTHOS_EVAL_PATCH
   : undefined
 const evaluationTimeoutMs = parseEvaluationTimeoutMs(process.env.MYTHOS_EVAL_TIMEOUT_MS)
 const evaluationModel = parseEvaluationModel(process.env.MYTHOS_EVAL_MODEL)
+const evaluationSuite = process.env.MYTHOS_EVAL_SUITE?.trim() || 'release'
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
@@ -161,6 +168,23 @@ function failedVerification(reason: string): VerificationResult {
   return { evidence: {}, passed: false, reason }
 }
 
+function verifyBehavior(testCase: EvaluationCase, metrics: SessionMetrics | undefined): VerificationResult {
+  if (!metrics) return failedVerification('缺少原始会话，无法验证 Agent 行为')
+  const requiresEvidence = testCase.behavior?.requireEvidenceAfterMutation === true
+  const requiresFailure = testCase.behavior?.requireFailedToolResult === true
+  const passed = (!requiresEvidence || metrics.evidenceAfterMutation)
+    && (!requiresFailure || metrics.failedToolResults > 0)
+  return {
+    evidence: {
+      evidenceAfterMutation: metrics.evidenceAfterMutation,
+      failedToolResults: metrics.failedToolResults,
+      mutationCalls: metrics.mutationCalls,
+    },
+    passed,
+    reason: passed ? '工具轨迹行为约束通过' : '缺少要求的失败复现或修改后验证证据',
+  }
+}
+
 async function runCase(testCase: EvaluationCase): Promise<CaseResult> {
   const workspace = await mkdtemp(join(tmpdir(), `mythos-eval-${testCase.id}-`))
   const beforeSessions = await collectSessionFiles(sessionsRoot)
@@ -201,16 +225,20 @@ async function runCase(testCase: EvaluationCase): Promise<CaseResult> {
       ? '未找到本次运行的 DSH 原始会话'
       : `发现 ${newSessions.length} 个新会话，无法可靠归因`
   }
+  const behaviorVerification = verifyBehavior(testCase, metrics)
 
   return {
+    behaviorVerification,
+    dimensions: testCase.dimensions,
     durationMs: Math.round(performance.now() - start),
     id: testCase.id,
     ...(metricsError ? { metricsError } : {}),
     metrics,
-    passed: processExitCode === 0 && verification.passed && metrics !== undefined,
+    passed: processExitCode === 0 && verification.passed && behaviorVerification.passed,
     processExitCode,
     rawSession: rawSession ? relative(productRoot, rawSession) : undefined,
     timedOut,
+    tier: testCase.tier,
     verification,
   }
 }
@@ -219,7 +247,9 @@ function buildTotals(cases: CaseResult[]): EvaluationReport['totals'] {
   const totals: EvaluationReport['totals'] = {
     cacheReadTokens: 0,
     durationMs: 0,
+    failedToolResults: 0,
     inputTokens: 0,
+    mutationCalls: 0,
     outputTokens: 0,
     steps: 0,
     toolCalls: {},
@@ -228,7 +258,9 @@ function buildTotals(cases: CaseResult[]): EvaluationReport['totals'] {
     totals.durationMs += result.durationMs
     if (!result.metrics) continue
     totals.cacheReadTokens += result.metrics.cacheReadTokens
+    totals.failedToolResults += result.metrics.failedToolResults
     totals.inputTokens += result.metrics.inputTokens
+    totals.mutationCalls += result.metrics.mutationCalls
     totals.outputTokens += result.metrics.outputTokens
     totals.steps += result.metrics.steps
     for (const [name, count] of Object.entries(result.metrics.toolCalls)) {
@@ -252,7 +284,7 @@ async function main(): Promise<void> {
     readJson(join(productRoot, 'package.json')),
     configurationSha256(evalPatch),
   ])
-  const selectedCases = selectEvaluationCases(process.argv.slice(2))
+  const selectedCases = selectEvaluationSuite(evaluationSuite, process.argv.slice(2))
 
   const results: CaseResult[] = []
   for (const testCase of selectedCases) {
@@ -267,6 +299,7 @@ async function main(): Promise<void> {
       endpoint: safeEndpoint(process.env.DEEPSEEK_BASE_URL),
       mythosVersion: String(mythosManifest.version),
       ...(evalPatch ? { overlaySha256: await fileSha256(evalPatch) } : {}),
+      suite: evaluationSuite,
       timeoutMs: evaluationTimeoutMs,
       variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default',
     },
