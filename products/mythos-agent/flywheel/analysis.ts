@@ -8,6 +8,7 @@ export interface CohortSummary {
   failedToolResultsMean: number
   inputTokensMean: number
   mutationCallsMean: number
+  maxSubagentCallsPerStepMean: number
   outputTokensMean: number
   passRate: number
   rawCoverage: number
@@ -48,6 +49,7 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
   let experienceRecoveries = 0
   let failedToolResults = 0
   let mutationCalls = 0
+  let maxSubagentCallsPerStep = 0
   let mutationSamples = 0
   let steps = 0
   let toolCalls = 0
@@ -71,6 +73,7 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
     experienceRecoveries += number(metrics.experienceRecoveries)
     const sampleMutations = number(metrics.mutationCalls)
     mutationCalls += sampleMutations
+    maxSubagentCallsPerStep += number(metrics.maxSubagentCallsPerStep)
     if (sampleMutations > 0) {
       mutationSamples += 1
       if (metrics.evidenceAfterMutation === true) evidenceAfterMutation += 1
@@ -91,6 +94,7 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
     failedToolResultsMean: mean(failedToolResults, samples),
     inputTokensMean: mean(input, samples),
     mutationCallsMean: mean(mutationCalls, samples),
+    maxSubagentCallsPerStepMean: mean(maxSubagentCallsPerStep, samples),
     outputTokensMean: mean(output, samples),
     passRate: mean(passed, samples),
     rawCoverage: mean(withRaw, samples),

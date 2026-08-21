@@ -5,6 +5,8 @@ export interface GateCriteria {
   cohortPrefix: string
   maxDurationMsP95: number
   minEvidenceAfterMutationRate?: number
+  minCompactionSummariesMean?: number
+  minMaxSubagentCallsPerStepMean?: number
   minResumeBoundariesMean?: number
   minSamples: number
   minTurnsMean?: number
@@ -35,6 +37,14 @@ export function evaluateReleaseGate(
     if (criteria.minEvidenceAfterMutationRate !== undefined
       && summary.evidenceAfterMutationRate < criteria.minEvidenceAfterMutationRate) {
       failures.push(`${caseId}: 修改后验证率 ${summary.evidenceAfterMutationRate}`)
+    }
+    if (criteria.minCompactionSummariesMean !== undefined
+      && summary.compactionSummariesMean < criteria.minCompactionSummariesMean) {
+      failures.push(`${caseId}: 平均压缩摘要 ${summary.compactionSummariesMean}`)
+    }
+    if (criteria.minMaxSubagentCallsPerStepMean !== undefined
+      && summary.maxSubagentCallsPerStepMean < criteria.minMaxSubagentCallsPerStepMean) {
+      failures.push(`${caseId}: 单步最大并行子 Agent 调用均值 ${summary.maxSubagentCallsPerStepMean}`)
     }
     if (criteria.minResumeBoundariesMean !== undefined
       && summary.resumeBoundariesMean < criteria.minResumeBoundariesMean) {

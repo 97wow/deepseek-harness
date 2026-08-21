@@ -92,11 +92,23 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
         raw = { byteExact: true, sha256: await copyRawImmutable(source, join(caseRoot, 'session.jsonl.zstd')) }
         rawSessions += 1
       }
+      const relatedRaw: { byteExact: true; path: string; sha256: string }[] = []
+      if (Array.isArray(testCase.relatedRawSessions)) {
+        const relatedRoot = join(caseRoot, 'related')
+        await mkdir(relatedRoot, { mode: 0o700, recursive: true })
+        for (let index = 0; index < testCase.relatedRawSessions.length; index += 1) {
+          const source = await resolveRawSession(productRoot, sessionsRoot, trustedRoot, testCase.relatedRawSessions[index])
+          const path = `related/session-${index + 1}.jsonl.zstd`
+          relatedRaw.push({ byteExact: true, path, sha256: await copyRawImmutable(source, join(caseRoot, path)) })
+          rawSessions += 1
+        }
+      }
       const label = {
         baseline: report.baseline,
         case: testCase,
         completedAt: report.completedAt,
         raw,
+        ...(relatedRaw.length > 0 ? { relatedRaw } : {}),
         reportVersion: report.reportVersion,
         replay: report.replay,
         runId,

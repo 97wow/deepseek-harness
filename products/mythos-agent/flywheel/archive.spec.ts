@@ -71,6 +71,19 @@ describe('archiveFlywheel', () => {
     await expect(archiveFlywheel(options)).rejects.toThrow('副本与来源不一致')
   })
 
+  it('按字节归档父会话关联的子 Agent 会话', async () => {
+    const options = await fixture()
+    const parent = join(options.sessionsRoot, 'parent', 'session.jsonl.zstd')
+    const child = join(options.sessionsRoot, 'child', 'session.jsonl.zstd')
+    await mkdir(join(options.sessionsRoot, 'parent'))
+    await mkdir(join(options.sessionsRoot, 'child'))
+    await writeFile(parent, 'parent')
+    await writeFile(child, 'child')
+    await writeReport(options, [{ id: 'case', passed: true, rawSession: relative(options.productRoot, parent), relatedRawSessions: [relative(options.productRoot, child)] }])
+    await expect(archiveFlywheel(options)).resolves.toEqual({ rawSessions: 2, samples: 1 })
+    expect(await readFile(join(options.outputRoot, 'runs', 'run-1', 'case', 'related', 'session-1.jsonl.zstd'), 'utf8')).toBe('child')
+  })
+
   it('拒绝通过符号链接越出会话根目录', async () => {
     const options = await fixture()
     const outside = join(options.productRoot, 'outside.zstd')

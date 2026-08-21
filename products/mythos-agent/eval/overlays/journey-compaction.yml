@@ -1,0 +1,16 @@
+- id: llm-deepseek
+  config:
+    maxTokens: 4096
+    defaultContextWindow: 18000
+    models:
+      - id: deepseek-v4-flash
+        name: Mythos M3
+        contextWindow: 18000
+        maxTokens: 4096
+
+- id: compaction-basic
+  config:
+    thresholdRatio: 0.72
+    retainTokens: 5000
+    maxTokens: 2048
+    compactionRetries: 2

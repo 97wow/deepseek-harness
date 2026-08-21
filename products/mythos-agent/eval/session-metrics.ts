@@ -8,6 +8,7 @@ export interface SessionMetrics {
   failedToolResults: number
   inputTokens: number
   mutationCalls: number
+  maxSubagentCallsPerStep: number
   outputTokens: number
   resumeBoundaries: number
   steps: number
@@ -47,6 +48,7 @@ export function parseSessionJsonl(jsonl: string): SessionMetrics {
     failedToolResults: 0,
     inputTokens: 0,
     mutationCalls: 0,
+    maxSubagentCallsPerStep: 0,
     outputTokens: 0,
     resumeBoundaries: 0,
     steps: 0,
@@ -54,6 +56,8 @@ export function parseSessionJsonl(jsonl: string): SessionMetrics {
     toolResults: 0,
     turns: 0,
   }
+
+  let subagentCallsInStep = 0
 
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue
@@ -106,12 +110,15 @@ export function parseSessionJsonl(jsonl: string): SessionMetrics {
 
     if (type === 'step/end') {
       metrics.steps += 1
+      metrics.maxSubagentCallsPerStep = Math.max(metrics.maxSubagentCallsPerStep, subagentCallsInStep)
+      subagentCallsInStep = 0
       continue
     }
 
     if (type === 'tool/call') {
       const name = typeof data?.name === 'string' ? data.name : 'unknown'
       metrics.toolCalls[name] = (metrics.toolCalls[name] ?? 0) + 1
+      if (name === 'subagent') subagentCallsInStep += 1
       if (name === 'write' || name === 'edit') {
         metrics.mutationCalls += 1
         metrics.evidenceAfterMutation = false

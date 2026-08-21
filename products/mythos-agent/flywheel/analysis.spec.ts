@@ -23,6 +23,7 @@ describe('flywheel analysis', () => {
       failedToolResultsMean: 0.5,
       inputTokensMean: 15,
       mutationCallsMean: 1,
+      maxSubagentCallsPerStepMean: 0,
       outputTokensMean: 3,
       passRate: 0.5,
       rawCoverage: 0.5,

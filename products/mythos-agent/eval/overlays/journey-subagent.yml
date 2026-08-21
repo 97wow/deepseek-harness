@@ -1,0 +1,4 @@
+- id: compaction-basic
+  config:
+    thresholdRatio: 0.8
+    retainRatio: 0.16

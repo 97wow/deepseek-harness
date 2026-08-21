@@ -58,6 +58,7 @@ describe('parseSessionJsonl', () => {
       failedToolResults: 1,
       inputTokens: 100,
       mutationCalls: 1,
+      maxSubagentCallsPerStep: 0,
       outputTokens: 20,
       resumeBoundaries: 0,
       steps: 1,
@@ -66,5 +67,16 @@ describe('parseSessionJsonl', () => {
       turnReason: 'completed',
       turns: 0,
     })
+  })
+
+  it('记录同一模型步骤内的并行子 Agent 调用数', () => {
+    const metrics = parseSessionJsonl([
+      JSON.stringify({ type: 'tool/call', data: { name: 'subagent' } }),
+      JSON.stringify({ type: 'tool/call', data: { name: 'subagent' } }),
+      JSON.stringify({ type: 'step/end', data: {} }),
+      JSON.stringify({ type: 'tool/call', data: { name: 'subagent' } }),
+      JSON.stringify({ type: 'step/end', data: {} }),
+    ].join('\n'))
+    expect(metrics.maxSubagentCallsPerStep).toBe(2)
   })
 })

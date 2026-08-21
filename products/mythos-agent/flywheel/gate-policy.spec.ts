@@ -11,6 +11,7 @@ const healthy = {
   failedToolResultsMean: 0,
   inputTokensMean: 1,
   mutationCallsMean: 1,
+  maxSubagentCallsPerStepMean: 2,
   outputTokensMean: 1,
   passRate: 1,
   rawCoverage: 1,
@@ -34,6 +35,7 @@ describe('evaluateReleaseGate', () => {
       'current:case': {
         ...healthy,
         durationMsP95: 101,
+        compactionSummariesMean: 0,
         evidenceAfterMutationRate: 0.5,
         passRate: 0.5,
         rawCoverage: 0.5,
@@ -41,17 +43,20 @@ describe('evaluateReleaseGate', () => {
         timeoutRate: 0.5,
         resumeBoundariesMean: 1,
         turnsMean: 2,
+        maxSubagentCallsPerStepMean: 1,
       },
     }, {
       caseIds: ['case', 'missing'],
       cohortPrefix: 'current',
       maxDurationMsP95: 100,
       minEvidenceAfterMutationRate: 1,
+      minCompactionSummariesMean: 1,
+      minMaxSubagentCallsPerStepMean: 2,
       minResumeBoundariesMean: 2,
       minSamples: 3,
       minTurnsMean: 3,
     })
     expect(result.passed).toBe(false)
-    expect(result.failures).toHaveLength(9)
+    expect(result.failures).toHaveLength(11)
   })
 })
