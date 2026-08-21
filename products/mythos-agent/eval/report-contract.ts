@@ -50,76 +50,216 @@ export const internalEvaluationModules: Readonly<Record<string, readonly Evaluat
   'journey-turn-runner.ts': ['advanced-journey', 'journey'],
 }
 
-function shellTokens(command: string): string[] {
-  const tokens: string[] = []
+type ShellToken = { kind: 'boundary' | 'word'; value: string }
+
+function shellTokens(command: string): ShellToken[] {
+  const tokens: ShellToken[] = []
   let token = ''
   let quote: "'" | '"' | null = null
-  let escaped = false
+  let started = false
   const flush = (): void => {
-    if (token !== '') tokens.push(token)
+    if (started) tokens.push({ kind: 'word', value: token })
     token = ''
+    started = false
   }
   for (let index = 0; index < command.length; index += 1) {
     const character = command[index]!
-    if (escaped) {
-      token += character
-      escaped = false
-      continue
-    }
-    if (character === '\\' && quote !== "'") {
-      escaped = true
-      continue
-    }
-    if (quote !== null) {
-      if (character === quote) quote = null
+    if (quote === "'") {
+      if (character === "'") quote = null
       else token += character
       continue
     }
+    if (quote === '"') {
+      if (character === '"') {
+        quote = null
+      } else if (character === '\\') {
+        const next = command[index + 1]
+        if (next === undefined) throw new Error('package script shell 解析失败')
+        if (next === '$' || next === '`' || next === '"' || next === '\\') {
+          token += next
+          index += 1
+        } else if (next !== '\n') {
+          token += character
+        } else {
+          index += 1
+        }
+      } else {
+        if (character === '`' || (character === '$' && command[index + 1] === '(')) {
+          throw new Error('package script 禁止命令替换')
+        }
+        token += character
+      }
+      continue
+    }
+    if (character === '\\') {
+      const next = command[index + 1]
+      if (next === undefined) throw new Error('package script shell 解析失败')
+      started = true
+      if (next !== '\n') token += next
+      index += 1
+      continue
+    }
     if (character === "'" || character === '"') {
+      started = true
       quote = character
+      continue
+    }
+    if (character === '`' || (character === '$' && command[index + 1] === '(')) {
+      throw new Error('package script 禁止命令替换')
+    }
+    if (character === '\n') {
+      flush()
+      tokens.push({ kind: 'boundary', value: ';' })
       continue
     }
     if (/\s/u.test(character)) {
       flush()
       continue
     }
-    if (character === ';' || character === '|'
-      || (character === '&' && command[index + 1] === '&')) {
+    if (character === ';' || ((character === '&' || character === '|') && command[index + 1] === character)) {
       flush()
-      const paired = (character === '&' || character === '|') && command[index + 1] === character
-      tokens.push(paired ? `${character}${character}` : character)
-      if (paired) index += 1
+      const boundary = character === ';' ? character : `${character}${character}`
+      tokens.push({ kind: 'boundary', value: boundary })
+      if (character !== ';') index += 1
       continue
     }
+    if (character === '&' || character === '|' || character === '<' || character === '>'
+      || character === '(' || character === ')') throw new Error('package script 包含不支持的 shell 结构')
+    started = true
     token += character
   }
-  if (escaped) token += '\\'
+  if (quote !== null) throw new Error('package script 引号未闭合')
   flush()
   return tokens
+}
+
+function isAssignment(value: string): boolean {
+  return /^[a-zA-Z_][a-zA-Z0-9_]*=/u.test(value)
+}
+
+function commandWords(tokens: readonly ShellToken[]): string[][] {
+  const commands: string[][] = []
+  let words: string[] = []
+  for (const token of tokens) {
+    if (token.kind === 'word') {
+      words.push(token.value)
+      continue
+    }
+    if (words.length === 0) throw new Error('package script simple command 为空')
+    commands.push(words)
+    words = []
+  }
+  if (words.length > 0) commands.push(words)
+  else if (tokens.at(-1)?.kind === 'boundary' && tokens.at(-1)?.value !== ';') throw new Error('package script 缺少后续 command')
+  return commands
+}
+
+function consumeEnv(words: readonly string[], start: number): number {
+  let index = start
+  while (index < words.length) {
+    const value = words[index]!
+    if (isAssignment(value)) {
+      index += 1
+      continue
+    }
+    if (value === '--') return index + 1
+    if (value === '-i' || value === '--ignore-environment' || value === '-0' || value === '--null') {
+      index += 1
+      continue
+    }
+    if (value === '-u' || value === '--unset') {
+      if (words[index + 1] === undefined) throw new Error('env option 缺少参数')
+      index += 2
+      continue
+    }
+    if (value.startsWith('--unset=')) {
+      index += 1
+      continue
+    }
+    if (value.startsWith('-')) throw new Error('env option 无法静态解析')
+    return index
+  }
+  throw new Error('env wrapper 缺少 executable')
+}
+
+function executableIndex(words: readonly string[]): number | null {
+  let index = 0
+  while (isAssignment(words[index] ?? '')) index += 1
+  if (words[index] === undefined) return null
+  if (words[index] === 'env') index = consumeEnv(words, index + 1)
+  if (words[index] === 'pnpm') {
+    if (words[index + 1] !== 'exec') {
+      if (words[index + 1]?.startsWith('-') || words.slice(index + 1).some(value => value === 'tsx' || value.endsWith('/tsx'))) {
+        throw new Error('pnpm wrapper 无法静态解析')
+      }
+      return null
+    }
+    index += 2
+    if (words[index] === '--') index += 1
+    if (words[index] === undefined || words[index]!.startsWith('-')) throw new Error('pnpm exec wrapper 无法静态解析')
+  } else if (words[index] === 'npx') {
+    index += 1
+    while (words[index]?.startsWith('-')) {
+      const option = words[index]!
+      if (option === '--yes' || option === '-y' || option === '--ignore-existing') index += 1
+      else if (option === '--package' || option === '-p') {
+        if (words[index + 1] === undefined) throw new Error('npx option 缺少参数')
+        index += 2
+      } else if (option.startsWith('--package=')) index += 1
+      else throw new Error('npx option 无法静态解析')
+    }
+    if (words[index] === undefined) throw new Error('npx wrapper 缺少 executable')
+  }
+  return index
+}
+
+function tsxEntrypoint(words: readonly string[]): string | null {
+  const executable = executableIndex(words)
+  if (executable === null) return null
+  const value = words[executable]!
+  if (value.includes('$')) throw new Error('executable 无法静态解析')
+  if (value === 'sh' || value === 'bash' || value === 'dash' || value === 'zsh' || value === 'eval') {
+    throw new Error('package script 禁止动态 shell wrapper')
+  }
+  if (value !== 'tsx' && !value.endsWith('/tsx')) return null
+  let index = executable + 1
+  while (words[index]?.startsWith('-')) {
+    const option = words[index]!
+    if (option === '--') {
+      index += 1
+      break
+    }
+    if (option === '--no-cache' || option === '--clear-screen') {
+      index += 1
+      continue
+    }
+    if (option === '--tsconfig' || option === '-p') {
+      if (words[index + 1] === undefined) throw new Error('tsx option 缺少参数')
+      index += 2
+      continue
+    }
+    if (option.startsWith('--tsconfig=') || option.startsWith('-p=')) {
+      index += 1
+      continue
+    }
+    throw new Error('tsx option 无法静态解析')
+  }
+  const script = words[index]
+  if (script === undefined) throw new Error('tsx 缺少 script')
+  if (script.includes('$') || script.includes('*') || script.includes('?')) throw new Error('tsx script 无法静态解析')
+  const match = /^(?:\.\/)?eval\/([a-zA-Z0-9][a-zA-Z0-9._-]*\.ts)$/u.exec(script)
+  if ((script.startsWith('eval/') || script.startsWith('./eval/')) && !match) throw new Error('eval 入口路径无效')
+  return match?.[1] ?? null
 }
 
 /**
  * Extracts statically declared TypeScript evaluation entrypoints from a package script without executing a shell.
  * @param command Package script source text.
  * @returns Canonical filenames below the product's eval directory.
+ * @throws When shell syntax, wrappers, or pre-script options cannot be parsed unambiguously.
  */
 export function extractEvaluationEntrypoints(command: string): string[] {
-  const tokens = shellTokens(command)
-  const entrypoints: string[] = []
-  const operators = new Set(['&&', '||', ';', '|'])
-  for (let index = 0; index < tokens.length; index += 1) {
-    const executable = tokens[index]!
-    if (executable !== 'tsx' && !executable.endsWith('/tsx')) continue
-    for (let argument = index + 1; argument < tokens.length && !operators.has(tokens[argument]!); argument += 1) {
-      const match = /^(?:\.\/)?eval\/([a-zA-Z0-9][a-zA-Z0-9._-]*\.ts)$/u.exec(tokens[argument]!)
-      if (match) {
-        entrypoints.push(match[1]!)
-        index = argument
-        break
-      }
-    }
-  }
-  return entrypoints
+  return commandWords(shellTokens(command)).map(tsxEntrypoint).filter((value): value is string => value !== null)
 }
 
 export interface ReportCase {

@@ -114,14 +114,39 @@ describe('M3 + DSH 评测证据报告', () => {
   })
 
   it.each([
+    ['tsx --tsconfig eval/not-entry.ts eval/real.ts --flag', ['real.ts']],
+    ['tsx -p eval/not-entry.ts eval/real.ts --flag', ['real.ts']],
+    ['echo tsx eval/not-entry.ts && tsx eval/real.ts', ['real.ts']],
+    ["printf '%s' 'tsx eval/not-entry.ts' && tsx eval/real.ts", ['real.ts']],
     ['tsx --tsconfig config.json eval/new-entry.ts --case a', ['new-entry.ts']],
     ['tsx ./eval/new-entry.ts --case a', ['new-entry.ts']],
     ["MODE=test tsx 'eval/new-entry.ts' --case a", ['new-entry.ts']],
     ['MODE=test tsx "./eval/new-entry.ts" --case a', ['new-entry.ts']],
-    ['tsx product/launch.ts && tsx --tsconfig x eval/new-entry.ts --variant v', ['new-entry.ts']],
+    ['MODE=test env EXTRA=value tsx eval/new-entry.ts --case a', ['new-entry.ts']],
+    ['env -u OLD MODE=test pnpm exec tsx eval/new-entry.ts --case a', ['new-entry.ts']],
+    ['npx --yes tsx ./eval/new-entry.ts --case a', ['new-entry.ts']],
+    ['tsx eval/new\\-entry.ts --case a', ['new-entry.ts']],
+    ['tsx product/launch.ts && tsx --tsconfig x eval/new-entry.ts --variant v || echo failed; tsx eval/other.ts', ['new-entry.ts', 'other.ts']],
+    ['tsx product/launch.ts eval/not-an-entry.ts', []],
     ['tsc --noEmit eval/not-an-entry.ts', []],
   ])('静态提取公开入口：%s', (command, expected) => {
     expect(extractEvaluationEntrypoints(command)).toEqual(expected)
+  })
+
+  it.each([
+    'tsx --unknown eval/real.ts',
+    "tsx 'eval/real.ts",
+    'tsx $(printf eval/real.ts)',
+    'tsx `printf eval/real.ts`',
+    'tsx "eval/$ENTRY.ts"',
+    '$RUNNER eval/real.ts',
+    "sh -c 'tsx eval/real.ts'",
+    'pnpm --silent exec tsx eval/real.ts',
+    'tsx eval/real.ts > result.txt',
+    'tsx eval/real.ts < input.txt',
+    'echo ok | tsx eval/real.ts',
+  ])('无法安全静态解析时 fail closed：%s', command => {
+    expect(() => extractEvaluationEntrypoints(command)).toThrow()
   })
 
   it('内部非公开 runner 显式声明全部 commitment 归属', () => {
