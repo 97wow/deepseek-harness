@@ -1,5 +1,7 @@
 import { readFileSync, unlinkSync } from 'node:fs'
-import { createUserMessage, installModelSelection, SessionId } from '../../../apps/cli/src/mythos-eval-workspace-modules.js'
+import { installModelSelection } from '@deepseek-ai/dsh-agent/src/model-selection.ts'
+import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
+import { SessionId } from '@deepseek-ai/dsh-session/types'
 
 export const name = 'mythos-journey-turn-runner'
 export const inject = ['agentDefaultModel', 'agents', 'sessionPersistence', 'sessions']

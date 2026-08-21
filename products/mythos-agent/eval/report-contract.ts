@@ -10,8 +10,7 @@ import {
   type EvaluationEntry,
   type EvaluationEntryId,
 } from './entry-registry.js'
-import { collectRelativeImportClosure } from './import-closure.js'
-import { validateEvaluationModuleDispatch } from './launch.js'
+import { collectRelativeImportClosure, extractEvaluationEntryImports } from './import-closure.js'
 
 export type { EvaluationEntry, EvaluationEntryId } from './entry-registry.js'
 
@@ -24,13 +23,16 @@ const knownOverlays = new Set([
 ])
 const knownTurnReasons = new Set(['aborted', 'blocked', 'completed', 'error', 'interrupted', 'max-tokens'])
 const supportedCurrencies = new Set(['USD'])
+const journeyWorkspaceImports = new Set([
+  '@deepseek-ai/dsh-agent/src/model-selection.ts', '@deepseek-ai/dsh-llm/message', '@deepseek-ai/dsh-session/types',
+])
 
 export type FailureCategory = 'model_failure' | 'harness_failure' | 'infrastructure_failure'
 
 const commonFiles = [
   'package.json', 'home/profiles/mythos/cordis.yml', 'home/profiles/mythos/cordis.patch.yml',
   'home/profiles/mythos/package.json', 'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts',
-  'eval/report-contract.ts', 'eval/session-metrics.ts',
+  'eval/report-contract.ts', 'eval/session-metrics.ts', 'eval/workspace-modules.d.ts',
 ] as const
 
 export interface ReportCase {
@@ -193,16 +195,29 @@ export async function evaluationCommitment(input: {
   const endpointDigest = endpointCommitment(endpoint)
   const entryId = input.entryId ?? resolveEvaluationEntryId(input.entry, input.config)
   validateEvaluationRegistry()
-  validateEvaluationModuleDispatch()
   const registryEntry = evaluationEntryRegistry.get(entryId)
   if (registryEntry === undefined || registryEntry.visibility !== 'public') throw new Error('未知或不可启动的评测 entry ID')
   if (registryEntry.commitment !== input.entry) throw new Error('评测 entry ID 与 commitment 归属不一致')
   const explicitFiles = implementationFilesForEntry(entryId, input.overlays)
   const { productPrefix, trackedFiles, workspaceRoot } = await trackedWorkspace(productRoot)
   const productFiles = explicitFiles.map(path => posix.join(productPrefix, path))
+  const registryPath = posix.join(productPrefix, 'eval/entry-registry.ts')
+  const registrySource = (await readTrackedFile(workspaceRoot, registryPath, trackedFiles)).toString('utf8')
+  const entryImports = extractEvaluationEntryImports(registrySource)
+  if (entryImports.size !== evaluationEntryRegistry.size
+    || [...evaluationEntryRegistry.keys()].some(id => !entryImports.has(id))) {
+    throw new Error('runtime registry 与源码 entry loader 集合不一致')
+  }
+  const selectedImport = entryImports.get(entryId)
+  if (selectedImport === undefined) throw new Error('entry 缺少固定字面量 loader')
   const closureRoots = productFiles.filter(path => path.endsWith('.ts'))
   const importClosure = await collectRelativeImportClosure(workspaceRoot, closureRoots, {
-    allowedFiles: trackedFiles, controlPathPrefix: `${productPrefix}/eval/`,
+    allowedFiles: trackedFiles,
+    controlPathPrefix: `${productPrefix}/eval/`,
+    requiredDirectBareImports: new Map([
+      [posix.join(productPrefix, 'eval/journey-turn-runner.ts'), journeyWorkspaceImports],
+    ]),
+    selectedDynamicImports: new Map([[registryPath, new Set([selectedImport])]]),
   })
   const workspaceFiles = [...new Set([...productFiles, ...importClosure.files])].sort()
   const files = await Promise.all(workspaceFiles.map(async path => {

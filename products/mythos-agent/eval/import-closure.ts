@@ -5,12 +5,20 @@ import { load as loadYaml } from 'js-yaml'
 import {
   createSourceFile,
   forEachChild,
+  isArrayLiteralExpression,
+  isArrowFunction,
+  isBinaryExpression,
   isCallExpression,
   isElementAccessExpression,
+  isExportDeclaration,
   isIdentifier,
+  isImportDeclaration,
+  isNewExpression,
+  isObjectLiteralExpression,
   isPropertyAccessExpression,
+  isPropertyAssignment,
   isStringLiteral,
-  preProcessFile,
+  isVariableDeclaration,
   ScriptKind,
   ScriptTarget,
   SyntaxKind,
@@ -19,6 +27,8 @@ import {
 export interface ImportClosureOptions {
   allowedFiles?: ReadonlySet<string>
   controlPathPrefix: string
+  requiredDirectBareImports?: ReadonlyMap<string, ReadonlySet<string>>
+  selectedDynamicImports?: ReadonlyMap<string, ReadonlySet<string>>
 }
 
 export interface ImportClosureResult {
@@ -41,7 +51,7 @@ interface WorkspacePackage {
   manifestPath: string
 }
 
-const bannedLoaderIdentifiers = new Set(['Function', 'createRequire', 'eval', 'require'])
+const bannedLoaderIdentifiers = new Set(['Function', 'createRequire', 'eval', 'globalThis', 'module', 'require'])
 const builtins = new Set([...builtinModules, ...builtinModules.map(name => 'node:' + name)])
 const sourceExtensions = new Set(['.cjs', '.cts', '.js', '.jsx', '.mjs', '.mts', '.ts', '.tsx'])
 
@@ -144,7 +154,14 @@ function packageName(specifier: string): { name: string; subpath: string } {
 
 function exportTarget(manifest: PackageManifest, subpath: string): string | null {
   const key = subpath === '' ? '.' : './' + subpath
-  const value = manifest.exports?.[key]
+  let value = manifest.exports?.[key]
+  if (value === undefined) {
+    for (const [pattern, target] of Object.entries(manifest.exports ?? {})) {
+      if (!pattern.endsWith('*') || typeof target !== 'string' || !target.includes('*')) continue
+      const prefix = pattern.slice(0, -1)
+      if (key.startsWith(prefix)) value = target.replace('*', key.slice(prefix.length))
+    }
+  }
   if (typeof value === 'string') return value
   if (typeof value === 'object' && value !== null) {
     const conditions = value as { default?: unknown; import?: unknown }
@@ -177,32 +194,112 @@ function manifestDeclares(manifest: PackageManifest, dependency: string): boolea
     || Object.hasOwn(manifest.peerDependencies ?? {}, dependency)
 }
 
-function analyzeSourceImports(source: string, banRuntimeLoaders: boolean): string[] {
+interface SourceImports {
+  directBareImports: Set<string>
+  dynamicImports: Set<string>
+  staticImports: Set<string>
+}
+
+function isNativeFunctionInspection(node: import('typescript').Identifier): boolean {
+  const prototype = node.parent
+  const toString = prototype.parent
+  const call = toString.parent
+  return node.text === 'Function'
+    && isPropertyAccessExpression(prototype) && prototype.expression === node && prototype.name.text === 'prototype'
+    && isPropertyAccessExpression(toString) && toString.expression === prototype && toString.name.text === 'toString'
+    && isPropertyAccessExpression(call) && call.expression === toString && call.name.text === 'call'
+    && isCallExpression(call.parent) && call.parent.expression === call
+}
+
+function isFunctionIdentityComparison(node: import('typescript').Identifier): boolean {
+  return node.text === 'Function' && isBinaryExpression(node.parent)
+    && [SyntaxKind.EqualsEqualsEqualsToken, SyntaxKind.ExclamationEqualsEqualsToken,
+      SyntaxKind.EqualsEqualsToken, SyntaxKind.ExclamationEqualsToken].includes(node.parent.operatorToken.kind)
+}
+
+function analyzeSourceImports(source: string, sourcePath: string): SourceImports {
   const file = createSourceFile('eval-control.ts', source, ScriptTarget.Latest, true, ScriptKind.TS)
   const diagnostics = (file as typeof file & { parseDiagnostics?: readonly unknown[] }).parseDiagnostics ?? []
   if (diagnostics.length > 0) throw new Error('静态模块图源码无法安全解析')
-  const imports = new Set<string>()
+  const directBareImports = new Set<string>()
+  const dynamicImports = new Set<string>()
+  const staticImports = new Set<string>()
   const visit = (node: import('typescript').Node): void => {
-    if (banRuntimeLoaders && isIdentifier(node) && bannedLoaderIdentifiers.has(node.text)) {
-      throw new Error('eval 控制面出现禁用 loader 标识')
+    if (isIdentifier(node) && bannedLoaderIdentifiers.has(node.text)
+      && !isNativeFunctionInspection(node) && !isFunctionIdentityComparison(node)) {
+      throw new Error(`committed closure 出现禁用 loader 标识：${sourcePath}:${node.text}`)
     }
-    if (banRuntimeLoaders && isPropertyAccessExpression(node) && bannedLoaderIdentifiers.has(node.name.text)) {
-      throw new Error('eval 控制面出现禁用 loader 属性')
+    if (isPropertyAccessExpression(node) && bannedLoaderIdentifiers.has(node.name.text)) {
+      throw new Error(`committed closure 出现禁用 loader 属性：${sourcePath}:${node.name.text}`)
     }
-    if (banRuntimeLoaders && isElementAccessExpression(node) && isStringLiteral(node.argumentExpression)
+    if (isElementAccessExpression(node) && isStringLiteral(node.argumentExpression)
       && bannedLoaderIdentifiers.has(node.argumentExpression.text)) {
-      throw new Error('eval 控制面出现禁用 loader 属性')
+      throw new Error(`committed closure 出现禁用 loader 属性：${sourcePath}:${node.argumentExpression.text}`)
+    }
+    if ((isImportDeclaration(node) || isExportDeclaration(node)) && node.moduleSpecifier !== undefined
+      && isStringLiteral(node.moduleSpecifier)) {
+      staticImports.add(node.moduleSpecifier.text)
+      if (isImportDeclaration(node) && !node.moduleSpecifier.text.startsWith('.')
+        && !builtins.has(node.moduleSpecifier.text)) {
+        directBareImports.add(node.moduleSpecifier.text)
+      }
     }
     if (isCallExpression(node) && node.expression.kind === SyntaxKind.ImportKeyword) {
       if (node.arguments.length !== 1 || !isStringLiteral(node.arguments[0]!)) {
         throw new Error('import(expr) 必须使用单个固定字符串字面量')
       }
-      imports.add(node.arguments[0]!.text)
+      dynamicImports.add(node.arguments[0]!.text)
     }
     forEachChild(node, visit)
   }
   visit(file)
-  return [...imports]
+  return { directBareImports, dynamicImports, staticImports }
+}
+
+function propertyName(node: import('typescript').ObjectLiteralElementLike): string | null {
+  return 'name' in node && node.name !== undefined && (isIdentifier(node.name) || isStringLiteral(node.name))
+    ? node.name.text : null
+}
+
+/** Extract the sole entry-id to literal-import mapping from the registry initializer. */
+export function extractEvaluationEntryImports(source: string): Map<string, string> {
+  const file = createSourceFile('entry-registry.ts', source, ScriptTarget.Latest, true, ScriptKind.TS)
+  let registry: import('typescript').NewExpression | undefined
+  const find = (node: import('typescript').Node): void => {
+    if (isVariableDeclaration(node) && isIdentifier(node.name) && node.name.text === 'evaluationEntryRegistry'
+      && node.initializer !== undefined && isNewExpression(node.initializer)) registry = node.initializer
+    forEachChild(node, find)
+  }
+  find(file)
+  const rows = registry?.arguments?.[0]
+  if (registry === undefined || registry.expression.getText(file) !== 'Map' || rows === undefined
+    || !isArrayLiteralExpression(rows)) throw new Error('evaluationEntryRegistry 必须是静态 Map initializer')
+  const result = new Map<string, string>()
+  for (const row of rows.elements) {
+    if (!isArrayLiteralExpression(row) || row.elements.length !== 2 || !isStringLiteral(row.elements[0]!)
+      || !isObjectLiteralExpression(row.elements[1]!)) throw new Error('evaluation entry 必须是静态二元组')
+    const entryId = row.elements[0]!.text
+    const loadProperties = row.elements[1]!.properties.filter(property => propertyName(property) === 'load')
+    if (loadProperties.length !== 1 || !isPropertyAssignment(loadProperties[0]!)
+      || !isArrowFunction(loadProperties[0]!.initializer)) throw new Error('evaluation entry 必须有唯一固定 loader')
+    const imports: string[] = []
+    const collect = (node: import('typescript').Node): void => {
+      if (isCallExpression(node) && node.expression.kind === SyntaxKind.ImportKeyword) {
+        if (node.arguments.length !== 1 || !isStringLiteral(node.arguments[0]!)) {
+          throw new Error('entry loader import 必须是单个字符串字面量')
+        }
+        imports.push(node.arguments[0]!.text)
+      }
+      forEachChild(node, collect)
+    }
+    collect(loadProperties[0]!.initializer)
+    if (imports.length !== 1 || !imports[0]!.startsWith('./') || !imports[0]!.endsWith('.js')) {
+      throw new Error('evaluation entry loader 必须包含唯一相对字面量 import')
+    }
+    if (result.has(entryId)) throw new Error('evaluation entry ID 重复')
+    result.set(entryId, imports[0]!)
+  }
+  return result
 }
 
 function nearestManifest(
@@ -245,8 +342,30 @@ export async function collectRelativeImportClosure(
     const currentPath = repositoryPath(canonicalRoot, current)
     if (!sourceExtensions.has(extname(currentPath))) continue
     const source = await readFile(current, 'utf8')
-    const imports = new Set(preProcessFile(source, true, true).importedFiles.map(file => file.fileName))
-    for (const specifier of analyzeSourceImports(source, currentPath.startsWith(options.controlPathPrefix))) imports.add(specifier)
+    const analysis = analyzeSourceImports(source, currentPath)
+    const requiredDirect = options.requiredDirectBareImports?.get(currentPath)
+    if (requiredDirect !== undefined) {
+      const actual = [...analysis.directBareImports].sort()
+      const expected = [...requiredDirect].sort()
+      if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+        throw new Error('源码直接 workspace import 集合不一致')
+      }
+      for (const packageSpecifier of requiredDirect) {
+        if (!workspace.packages.has(packageName(packageSpecifier).name)) {
+          throw new Error('要求的直接 import 不是 tracked workspace package')
+        }
+      }
+    }
+    const selectedDynamic = options.selectedDynamicImports?.get(currentPath)
+    if (selectedDynamic !== undefined) {
+      for (const specifier of selectedDynamic) {
+        if (!analysis.dynamicImports.has(specifier)) throw new Error('选定 entry loader 与源码不一致')
+      }
+    }
+    const imports = new Set([
+      ...analysis.staticImports,
+      ...selectedDynamic === undefined ? analysis.dynamicImports : selectedDynamic,
+    ])
     for (const specifier of imports) {
       if (specifier.startsWith('./') || specifier.startsWith('../')) {
         pending.push(await resolveRelativeImport(canonicalRoot, current, specifier, options.allowedFiles))
@@ -258,8 +377,10 @@ export async function collectRelativeImportClosure(
       if (workspacePackage !== undefined) {
         usedWorkspacePackages.add(parsed.name)
         workspace.files.add(workspacePackage.manifestPath)
-        pending.push(await trackedOrdinaryFile(
-          canonicalRoot, sourceEntryForPackage(workspacePackage, parsed.subpath), options.allowedFiles))
+        if (requiredDirect?.has(specifier) === true) {
+          pending.push(await trackedOrdinaryFile(
+            canonicalRoot, sourceEntryForPackage(workspacePackage, parsed.subpath), options.allowedFiles))
+        }
         continue
       }
       const importerManifest = nearestManifest(currentPath, productPrefix, productManifest, workspace.packages)

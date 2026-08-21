@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import { evaluationEntryRegistry, type EvaluationEntryDefinition } from './entry-registry.js'
-import { evaluationModuleDispatch, launchEvaluation, validateEvaluationModuleDispatch } from './launch.js'
+import { launchEvaluation } from './launch.js'
 
 describe('结构化评测 launcher', () => {
   it('通过注入 loader 分派 registry 模块且不启动真实 runner', async () => {
-    const loader = vi.fn(async () => undefined)
+    const executionHook = vi.fn(async () => undefined)
     const runtime = { argv: ['node', 'eval/launch.ts'], environment: {} as Record<string, string | undefined> }
-    await launchEvaluation(['repeat', '--suite', 'all', 'case-a'], loader, runtime)
-    expect(loader).toHaveBeenCalledExactlyOnceWith('eval/repeat.ts')
-    expect(runtime.argv).toEqual(['node', 'eval/repeat.ts', 'case-a'])
+    await launchEvaluation(['repeat', '--suite', 'all', 'case-a'], executionHook, runtime)
+    expect(executionHook).toHaveBeenCalledExactlyOnceWith('repeat', evaluationEntryRegistry.get('repeat')!.load)
+    expect(runtime.argv).toEqual(['node', 'eval/launch.ts', 'case-a'])
     expect(runtime.environment).toMatchObject({ MYTHOS_EVAL_ENTRY_ID: 'repeat', MYTHOS_EVAL_SUITE: 'all' })
   })
 
@@ -39,24 +39,9 @@ describe('结构化评测 launcher', () => {
     }
   })
 
-  it('固定 launcher dispatch 与 registry 双向逐项一致', () => {
-    expect(evaluationModuleDispatch.size).toBe(evaluationEntryRegistry.size)
-    for (const [entryId, entry] of evaluationEntryRegistry) {
-      expect(evaluationModuleDispatch.get(entryId)?.module).toBe(entry.module)
-    }
-    expect(validateEvaluationModuleDispatch).not.toThrow()
-  })
-
-  it('新增 entry 未增加固定 import dispatch 时 fail closed', async () => {
-    const loader = vi.fn(async () => undefined)
-    const standard = evaluationEntryRegistry.get('standard')!
-    evaluationEntryRegistry.set('new-safe' as never, { ...standard, id: 'new-safe' } as EvaluationEntryDefinition)
-    try {
-      await expect(launchEvaluation(['new-safe'], loader,
-        { argv: ['node', 'launch'], environment: {} })).rejects.toThrow('集合不一致')
-      expect(loader).not.toHaveBeenCalled()
-    } finally {
-      evaluationEntryRegistry.delete('new-safe' as never)
-    }
+  it('执行 hook 只能接收 registry 已绑定的 loader，不能替换映射', async () => {
+    const executionHook = vi.fn(async (_entryId, load: () => Promise<unknown>) => { expect(load).toBeTypeOf('function') })
+    await launchEvaluation(['standard'], executionHook, { argv: ['node', 'launch'], environment: {} })
+    expect(executionHook).toHaveBeenCalledExactlyOnceWith('standard', evaluationEntryRegistry.get('standard')!.load)
   })
 })

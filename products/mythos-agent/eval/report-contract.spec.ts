@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { dirname, join } from 'node:path'
-import { appendFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -22,25 +22,38 @@ import { evaluationEntryRegistry } from './entry-registry.js'
 
 const execFileAsync = promisify(execFile)
 const entries: EvaluationEntry[] = ['advanced-journey', 'journey', 'qwen-local', 'real-repository', 'standard']
+const fixtureEntryImports = [
+  ['advanced-journey', './run-advanced-journeys.js'],
+  ['advanced-journey-repeat', './repeat-advanced-journeys.js'],
+  ['comprehensive', './run-comprehensive.js'],
+  ['journey', './run-journeys.js'],
+  ['journey-repeat', './repeat-journeys.js'],
+  ['qwen-local', './run-qwen-local.js'],
+  ['qwen-local-benchmark', './qwen-local-benchmark.js'],
+  ['real-repository', './run-real-repo.js'],
+  ['repeat', './repeat.js'],
+  ['standard', './run.js'],
+] as const
 
 async function fixture(): Promise<{ productRoot: string; repoRoot: string }> {
   const repoRoot = await mkdtemp(join(tmpdir(), 'mythos-report-'))
   const productRoot = join(repoRoot, 'product')
-  const files = [...new Set(entries.flatMap(entry => implementationFiles(entry, entry === 'advanced-journey'
-    ? ['eval/overlays/journey-subagent.yml'] : [])))]
+  const files = [...new Set([
+    ...entries.flatMap(entry => implementationFiles(entry, entry === 'advanced-journey'
+      ? ['eval/overlays/journey-subagent.yml'] : [])),
+    ...fixtureEntryImports.map(([, specifier]) => `eval/${specifier.slice(2, -3)}.ts`),
+  ])]
   for (const name of files) {
     const path = join(productRoot, name)
     await mkdir(dirname(path), { recursive: true })
     const contents = name === 'package.json' ? JSON.stringify({
       mythos: { dshCommit: 'dsh-commit', dshVersion: '0.1.0-rc.8' }, version: '0.1.1',
-    }) : name === 'eval/launch.ts' ? [
-      "void import('./run-advanced-journeys.js')", "void import('./repeat-advanced-journeys.js')",
-      "void import('./run-comprehensive.js')", "void import('./run-journeys.js')", "void import('./repeat-journeys.js')",
-      "void import('./run-qwen-local.js')", "void import('./qwen-local-benchmark.js')", "void import('./run-real-repo.js')",
-      "void import('./repeat.js')", "void import('./run.js')",
-      ].join('\n') + '\n'
+    }) : name === 'eval/launch.ts' ? "import './entry-registry.js'\n"
+      : name === 'eval/entry-registry.ts' ? `export const evaluationEntryRegistry = new Map([\n${fixtureEntryImports
+        .map(([id, specifier]) => `  ['${id}', { load: async () => await import('${specifier}') }],`).join('\n')}\n])\n`
       : name === 'eval/journey-turn-runner.ts'
-        ? "import '../../apps/cli/src/mythos-eval-workspace-modules.js'\n"
+        ? ["import '@deepseek-ai/dsh-agent/src/model-selection.ts'", "import '@deepseek-ai/dsh-llm/message'",
+          "import '@deepseek-ai/dsh-session/types'"].join('\n') + '\n'
         : name.endsWith('.ts') ? 'export {}\n' : `${name}:initial\n`
     await writeFile(path, contents)
   }
@@ -54,20 +67,21 @@ async function fixture(): Promise<{ productRoot: string; repoRoot: string }> {
     devDependencies: Object.fromEntries(packageDefinitions.map(([name]) => [name, 'workspace:^'])),
     name: '@deepseek-ai/dsh',
   }))
-  await mkdir(join(repoRoot, 'apps/cli/src'), { recursive: true })
-  await writeFile(join(repoRoot, 'apps/cli/src/mythos-eval-workspace-modules.ts'), [
-    "export * from '@deepseek-ai/dsh-agent'", "export * from '@deepseek-ai/dsh-llm'",
-    "export * from '@deepseek-ai/dsh-session'",
-  ].join('\n') + '\n')
   await writeFile(join(repoRoot, 'package.json'), '{}')
   await writeFile(join(repoRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
   await writeFile(join(repoRoot, 'pnpm-workspace.yaml'), "packages:\n  - apps/*\n  - packages/*/*\n")
   for (const [name, directory] of packageDefinitions) {
     await mkdir(join(repoRoot, directory, 'src'), { recursive: true })
+    const sourceName = name.endsWith('dsh-agent') ? 'model-selection'
+      : name.endsWith('dsh-llm') ? 'message' : 'types'
+    const exports = name.endsWith('dsh-agent')
+      ? { '.': { default: './lib/index.js' }, './src/*': './src/*' }
+      : { '.': { default: './lib/index.js' }, [`./${sourceName}`]: { default: `./lib/types/${sourceName}.js` } }
     await writeFile(join(repoRoot, directory, 'package.json'), JSON.stringify({
-      exports: { '.': { default: './lib/index.js' } }, main: 'lib/index.js', name,
+      exports, main: 'lib/index.js', name,
     }))
     await writeFile(join(repoRoot, directory, 'src/index.ts'), `export const packageName = '${name}'\n`)
+    await writeFile(join(repoRoot, directory, `src/${sourceName}.ts`), `export const packageName = '${name}'\n`)
   }
   await execFileAsync('git', ['init', '-q'], { cwd: repoRoot })
   await execFileAsync('git', ['config', 'user.email', 'mythos@test.invalid'], { cwd: repoRoot })
@@ -168,18 +182,20 @@ describe('M3 + DSH 评测证据报告', () => {
 
   it.each([...evaluationEntryRegistry.keys()])('%s commitment 完成固定 launcher 与静态模块闭包验证', async entryId => {
     const definition = evaluationEntryRegistry.get(entryId)!
+    const expectedSpecifier = fixtureEntryImports.find(([id]) => id === entryId)![1]
+    const expectedModule = `eval/${expectedSpecifier.slice(2, -3)}.ts`
     const productRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
     const commitment = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
       entry: definition.commitment, entryId, productRoot })
     expect(commitment.files.map(file => file.path)).toEqual(expect.arrayContaining([
-      'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts', definition.module,
+      'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts', expectedModule,
     ]))
     if (definition.commitment === 'journey' || definition.commitment === 'advanced-journey') {
       expect(commitment.files.map(file => file.path)).toEqual(expect.arrayContaining([
         'workspace:apps/cli/package.json', 'workspace:packages/core/agent/package.json',
-        'workspace:packages/core/agent/src/index.ts', 'workspace:packages/core/session/package.json',
-        'workspace:packages/core/session/src/index.ts', 'workspace:packages/llm/llm/package.json',
-        'workspace:packages/llm/llm/src/index.ts',
+        'workspace:packages/core/agent/src/model-selection.ts', 'workspace:packages/core/session/package.json',
+        'workspace:packages/core/session/src/types.ts', 'workspace:packages/llm/llm/package.json',
+        'workspace:packages/llm/llm/src/message.ts',
       ]))
     }
   })
@@ -217,10 +233,47 @@ describe('M3 + DSH 评测证据报告', () => {
     const { productRoot, repoRoot } = await fixture()
     const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
       entry: 'journey', entryId: 'journey', productRoot })
-    await appendFile(join(repoRoot, 'packages/core/agent/src/index.ts'), '\nexport const changed = true\n')
+    await appendFile(join(repoRoot, 'packages/core/agent/src/model-selection.ts'), '\nexport const changed = true\n')
     const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
       entry: 'journey', entryId: 'journey', productRoot })
     expect(second.sha256).not.toBe(first.sha256)
+  })
+
+  it.each([
+    '@deepseek-ai/dsh-agent/src/model-selection.ts',
+    '@deepseek-ai/dsh-llm/message',
+    '@deepseek-ai/dsh-session/types',
+  ])('journey 直接 workspace import 缺少 %s 时 fail closed', async removed => {
+    const { productRoot } = await fixture()
+    const imports = [
+      '@deepseek-ai/dsh-agent/src/model-selection.ts', '@deepseek-ai/dsh-llm/message', '@deepseek-ai/dsh-session/types',
+    ].filter(specifier => specifier !== removed)
+    await writeFile(join(productRoot, 'eval/journey-turn-runner.ts'), imports.map(specifier => `import '${specifier}'`).join('\n'))
+    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'journey', entryId: 'journey', productRoot })).rejects.toThrow('直接 workspace import 集合不一致')
+  })
+
+  it('本地 SessionId stub 不能替代直接 workspace package import', async () => {
+    const { productRoot } = await fixture()
+    await writeFile(join(productRoot, 'eval/journey-turn-runner.ts'), [
+      "import '@deepseek-ai/dsh-agent/src/model-selection.ts'", "import '@deepseek-ai/dsh-llm/message'",
+      "import { SessionId } from './session-id-stub.js'", 'void SessionId',
+    ].join('\n'))
+    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'journey', entryId: 'journey', productRoot })).rejects.toThrow('直接 workspace import 集合不一致')
+  })
+
+  it('standard loader 改为 repeat 会改变 AST 映射与 commitment', async () => {
+    const { productRoot } = await fixture()
+    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'standard', entryId: 'standard', productRoot })
+    const registryPath = join(productRoot, 'eval/entry-registry.ts')
+    const source = await readFile(registryPath, 'utf8')
+    await writeFile(registryPath, source.replace("import('./run.js')", "import('./repeat.js')"))
+    const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'standard', entryId: 'standard', productRoot })
+    expect(second.sha256).not.toBe(first.sha256)
+    expect(second.files.map(file => file.path)).toContain('eval/repeat.ts')
   })
 
   it('workspace package manifest 改写固定入口时 fail closed', async () => {

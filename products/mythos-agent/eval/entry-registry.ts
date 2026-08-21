@@ -16,7 +16,7 @@ export interface EvaluationEntryDefinition {
   commitment: EvaluationEntry
   environment: ReadonlyMap<string, string>
   internalDependencies: readonly string[]
-  module: `eval/${string}.ts`
+  load(): Promise<unknown>
   parameters: {
     caseIds: boolean
     options: ReadonlyMap<string, readonly string[]>
@@ -29,63 +29,63 @@ const noOptions = new Map<string, readonly string[]>()
 
 export const evaluationEntryRegistry = new Map<EvaluationEntryId, EvaluationEntryDefinition>([
   ['advanced-journey', {
-    commitment: 'advanced-journey', module: 'eval/run-advanced-journeys.ts',
+    commitment: 'advanced-journey', load: async () => await import('./run-advanced-journeys.js'),
     parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
     internalDependencies: ['eval/advanced-journey-configuration.ts', 'eval/advanced-journeys.ts', 'eval/journey-turn-runner.ts',
-      'eval/run-advanced-journeys.ts', 'eval/overlays/journey.yml'],
+      'eval/overlays/journey.yml'],
   }],
   ['advanced-journey-repeat', {
-    commitment: 'advanced-journey', module: 'eval/repeat-advanced-journeys.ts',
+    commitment: 'advanced-journey', load: async () => await import('./repeat-advanced-journeys.js'),
     parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
     internalDependencies: ['eval/advanced-journey-configuration.ts', 'eval/advanced-journeys.ts', 'eval/journey-turn-runner.ts',
-      'eval/options.ts', 'eval/repeat-advanced-journeys.ts', 'eval/run-advanced-journeys.ts', 'eval/overlays/journey.yml'],
+      'eval/options.ts', 'eval/run-advanced-journeys.ts', 'eval/overlays/journey.yml'],
   }],
   ['comprehensive', {
-    commitment: 'standard', module: 'eval/run-comprehensive.ts',
+    commitment: 'standard', load: async () => await import('./run-comprehensive.js'),
     parameters: { caseIds: true, options: noOptions }, environment: new Map([['MYTHOS_EVAL_SUITE', 'all']]),
     visibility: 'public',
-    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run-comprehensive.ts', 'eval/run.ts'],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts'],
   }],
   ['journey', {
-    commitment: 'journey', module: 'eval/run-journeys.ts',
+    commitment: 'journey', load: async () => await import('./run-journeys.js'),
     parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
     internalDependencies: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts',
-      'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
+      'eval/overlays/journey.yml'],
   }],
   ['journey-repeat', {
-    commitment: 'journey', module: 'eval/repeat-journeys.ts',
+    commitment: 'journey', load: async () => await import('./repeat-journeys.js'),
     parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
     internalDependencies: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts',
-      'eval/options.ts', 'eval/repeat-journeys.ts', 'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
+      'eval/options.ts', 'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
   }],
   ['qwen-local', {
-    commitment: 'qwen-local', module: 'eval/run-qwen-local.ts',
+    commitment: 'qwen-local', load: async () => await import('./run-qwen-local.js'),
     parameters: { caseIds: true, options: noOptions }, environment: new Map([['MYTHOS_EVAL_SUITE', 'release']]),
     visibility: 'public',
-    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run-qwen-local.ts', 'eval/run.ts', 'eval/overlays/qwen-local.yml'],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/overlays/qwen-local.yml'],
   }],
   ['qwen-local-benchmark', {
-    commitment: 'qwen-local', module: 'eval/qwen-local-benchmark.ts',
+    commitment: 'qwen-local', load: async () => await import('./qwen-local-benchmark.js'),
     parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
-    internalDependencies: ['eval/qwen-local-benchmark.ts', 'eval/run-qwen-local.ts', 'eval/run.ts', 'eval/options.ts',
+    internalDependencies: ['eval/run-qwen-local.ts', 'eval/run.ts', 'eval/options.ts',
       'eval/cases.ts', 'eval/overlays/qwen-local.yml'],
   }],
   ['real-repository', {
-    commitment: 'real-repository', module: 'eval/run-real-repo.ts',
+    commitment: 'real-repository', load: async () => await import('./run-real-repo.js'),
     parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
-    internalDependencies: ['eval/real-repo-cases.ts', 'eval/real-repo-configuration.ts', 'eval/run-real-repo.ts'],
+    internalDependencies: ['eval/real-repo-cases.ts', 'eval/real-repo-configuration.ts'],
   }],
   ['repeat', {
-    commitment: 'standard', module: 'eval/repeat.ts',
+    commitment: 'standard', load: async () => await import('./repeat.js'),
     parameters: { caseIds: true, options: new Map([['suite', ['all']]]) },
     environment: new Map([['MYTHOS_EVAL_SUITE', 'release']]), visibility: 'public',
-    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/repeat.ts', 'eval/run-comprehensive.ts', 'eval/run.ts'],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run-comprehensive.ts', 'eval/run.ts'],
   }],
   ['standard', {
-    commitment: 'standard', module: 'eval/run.ts',
+    commitment: 'standard', load: async () => await import('./run.js'),
     parameters: { caseIds: true, options: noOptions }, environment: new Map([['MYTHOS_EVAL_SUITE', 'release']]),
     visibility: 'public',
-    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts'],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts'],
   }],
 ])
 
@@ -125,7 +125,7 @@ export interface CanonicalPackageScript {
 const entryIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 const caseIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u
 
-const typecheckCommand = 'tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/entry-registry.ts eval/import-closure.ts eval/launch.ts eval/run.ts eval/run-comprehensive.ts eval/run-journeys.ts eval/journeys.ts eval/journey-configuration.ts eval/journey-turn-runner.ts eval/repeat-journeys.ts eval/advanced-journeys.ts eval/advanced-journey-configuration.ts eval/run-advanced-journeys.ts eval/repeat-advanced-journeys.ts eval/real-repo-cases.ts eval/real-repo-configuration.ts eval/run-real-repo.ts eval/run-qwen-local.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/comprehensive-gate.ts flywheel/journey-gate.ts flywheel/advanced-journey-gate.ts flywheel/real-repo-scope-gate.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts'
+const typecheckCommand = 'tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/workspace-modules.d.ts eval/entry-registry.ts eval/import-closure.ts eval/launch.ts eval/run.ts eval/run-comprehensive.ts eval/run-journeys.ts eval/journeys.ts eval/journey-configuration.ts eval/journey-turn-runner.ts eval/repeat-journeys.ts eval/advanced-journeys.ts eval/advanced-journey-configuration.ts eval/run-advanced-journeys.ts eval/repeat-advanced-journeys.ts eval/real-repo-cases.ts eval/real-repo-configuration.ts eval/run-real-repo.ts eval/run-qwen-local.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/comprehensive-gate.ts flywheel/journey-gate.ts flywheel/advanced-journey-gate.ts flywheel/real-repo-scope-gate.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts'
 
 export function canonicalEvaluationCommand(scriptName: string): string {
   const definition = publicEvaluationScripts.get(scriptName)

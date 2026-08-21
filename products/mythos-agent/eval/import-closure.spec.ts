@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
-import { collectRelativeImportClosure } from './import-closure.js'
+import { collectRelativeImportClosure, extractEvaluationEntryImports } from './import-closure.js'
 
 async function workspace(files: Readonly<Record<string, string>>): Promise<{ allowed: Set<string>; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'mythos-import-closure-'))
@@ -33,8 +33,39 @@ describe('eval 静态模块图', () => {
     'require(target)', '(require)(target)', 'module.require(target)', "module['require'](target)",
     'const { require } = module', 'createRequire(import.meta.url)', '(0, eval)(source)', 'eval.call(null, source)',
     'new Function(source)', "globalThis['Function'](source)", 'require.bind(null)(target)', 'require.call(null, target)',
+    'module[key](target)', 'globalThis[key](target)', "module['anything'](target)", "globalThis['anything'](target)",
   ])('任何 loader 标识或属性出现都 fail closed：%s', async source => {
     await expect(collect(source)).rejects.toThrow('禁用 loader')
+  })
+
+  it('禁用 loader 规则覆盖 eval 外的递归 committed closure', async () => {
+    const fixture = await workspace({
+      'product/eval/entry.ts': "import '../../internal/loader.js'",
+      'internal/loader.ts': 'module[key](target)',
+    })
+    await expect(collectRelativeImportClosure(fixture.root, ['product/eval/entry.ts'], {
+      allowedFiles: fixture.allowed, controlPathPrefix: 'product/eval/',
+    })).rejects.toThrow('禁用 loader')
+  })
+
+  it('entry registry AST 是唯一 entry→字面量 import 映射', async () => {
+    const source = await readFile(new URL('./entry-registry.ts', import.meta.url), 'utf8')
+    const expected = new Map([
+      ['advanced-journey', './run-advanced-journeys.js'],
+      ['advanced-journey-repeat', './repeat-advanced-journeys.js'],
+      ['comprehensive', './run-comprehensive.js'],
+      ['journey', './run-journeys.js'],
+      ['journey-repeat', './repeat-journeys.js'],
+      ['qwen-local', './run-qwen-local.js'],
+      ['qwen-local-benchmark', './qwen-local-benchmark.js'],
+      ['real-repository', './run-real-repo.js'],
+      ['repeat', './repeat.js'],
+      ['standard', './run.js'],
+    ])
+    expect(extractEvaluationEntryImports(source)).toEqual(expected)
+    const changed = source.replace("load: async () => await import('./run.js')",
+      "load: async () => await import('./repeat.js')")
+    expect(extractEvaluationEntryImports(changed)).not.toEqual(expected)
   })
 
   it.each([
