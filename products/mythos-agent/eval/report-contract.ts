@@ -129,6 +129,46 @@ function strictStringCanonical(value: string): string {
   return `s${String(value.length)}:${units}`
 }
 
+function assertPlainJsonData(value: unknown, path = '$', ancestors = new Set<object>()): void {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error(`评测报告包含非 JSON 数值：${path}`)
+    return
+  }
+  if (typeof value !== 'object') throw new Error(`评测报告包含非 JSON 值：${path}`)
+  if (isProxy(value)) throw new Error(`评测报告不得包含 Proxy：${path}`)
+  if (ancestors.has(value)) throw new Error(`评测报告不得包含循环引用：${path}`)
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) throw new Error(`评测报告数组原型无效：${path}`)
+      const keys = Object.keys(value)
+      const ownKeys = Reflect.ownKeys(value)
+      if (keys.length !== value.length || keys.some((key, index) => key !== String(index))
+        || ownKeys.length !== keys.length + 1 || !ownKeys.includes('length')) {
+        throw new Error(`评测报告数组不是普通 JSON 数组：${path}`)
+      }
+      for (const key of keys) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key)
+        if (descriptor === undefined || !('value' in descriptor)) throw new Error(`评测报告数组不得包含访问器：${path}`)
+        assertPlainJsonData(descriptor.value, `${path}[${key}]`, ancestors)
+      }
+      return
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`评测报告对象原型无效：${path}`)
+    const ownKeys = Reflect.ownKeys(value)
+    const keys = Object.keys(value)
+    if (ownKeys.some(key => typeof key === 'symbol') || ownKeys.length !== keys.length) {
+      throw new Error(`评测报告对象包含非 JSON 键：${path}`)
+    }
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (descriptor === undefined || !('value' in descriptor)) throw new Error(`评测报告对象不得包含访问器：${path}.${key}`)
+      assertPlainJsonData(descriptor.value, `${path}.${key}`, ancestors)
+    }
+  } finally { ancestors.delete(value) }
+}
+
 /** Injective over the accepted v2 report value domain; it never applies JSON coercions or Unicode normalization. */
 function strictCanonical(value: unknown, path = '$', ancestors = new Set<object>()): string {
   if (value === null) return 'z'
@@ -642,6 +682,7 @@ export async function buildEvaluationReport(input: EvaluationReportInput): Promi
 }
 
 function validateEvaluationReport(value: unknown): Record<string, unknown> {
+  assertPlainJsonData(value)
   const report = record(value)
   if (!Object.hasOwn(report, 'reportVersion') || !Object.hasOwn(report, 'cases')) throw new Error('评测报告缺少 own schema 字段')
   if (report.reportVersion !== 1 && report.reportVersion !== 2) throw new Error('不支持的评测报告版本')

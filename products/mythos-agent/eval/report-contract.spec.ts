@@ -466,9 +466,17 @@ describe('M3 + DSH 评测证据报告', () => {
   })
 
   it('v1 可解析但 v2 schema 必须显式合法', () => {
-    expect(parseEvaluationReport({ cases: [], passed: true, reportVersion: 1 })).toMatchObject({
+    const legacy = { cases: [], passed: true, reportVersion: 1 }
+    expect(parseEvaluationReport(legacy)).toMatchObject({
       acceptance: { failures: ['trusted_attestation_missing'], passed: false }, passed: false, reportVersion: 1,
     })
+    const invalidContainer = (value: unknown) => expect(parseEvaluationReport(value)).toMatchObject({
+      acceptance: { failures: ['trusted_attestation_invalid'], passed: false }, passed: false,
+    })
+    invalidContainer(Object.assign(Object.create(null), legacy))
+    invalidContainer(Object.assign(Object.create({ inherited: true }), legacy))
+    class LegacyCases extends Array<Record<string, unknown>> {}
+    invalidContainer({ ...legacy, cases: new LegacyCases() })
     expect(parseEvaluationReport({
       acceptance: { failures: ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete', 'zero_cases'], passed: false },
       cases: [], implementation: { entry: 'standard', files: [], runtime: { endpoint: { sha256: 'endpoint' }, parametersSha256: 'parameters' }, sha256: 'hash' },
