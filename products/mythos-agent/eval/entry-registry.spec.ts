@@ -29,8 +29,8 @@ describe('结构化评测入口 registry', () => {
   it('package scripts 整张表与机器策略字节级一致', async () => {
     const scripts = await packageScripts()
     expect(() => validatePackageEvaluationScripts(scripts)).not.toThrow()
-    expect(evaluationEntryRegistry.size).toBe(10)
-    expect(publicEvaluationScripts.size).toBe(11)
+    expect(evaluationEntryRegistry.size).toBe(11)
+    expect(publicEvaluationScripts.size).toBe(12)
     expect(canonicalPackageScripts.size).toBe(Object.keys(scripts).length)
     expect(new Set([...canonicalPackageScripts.values()].map(item => item.category)))
       .toEqual(new Set(['evaluation', 'internal-tool', 'non-eval']))
@@ -93,6 +93,17 @@ describe('结构化评测入口 registry', () => {
     const invocation = parseEvaluationLaunchArguments(['repeat', '--suite', 'all', 'case-a', 'case-b'])
     expect(invocation.options).toEqual(new Map([['suite', 'all']]))
     expect(invocation.caseIds).toEqual(['case-a', 'case-b'])
+  })
+
+  it('M3 minimal smoke 固定现有单 case、单 attempt、并发 1、零重试和请求上限', () => {
+    const invocation = parseEvaluationLaunchArguments(['m3-smoke', 'exact-file'])
+    expect(invocation.caseIds).toEqual(['exact-file'])
+    expect(invocation.entry.smokePolicy).toEqual({
+      attempts: 1, concurrency: 1, maxRetries: 0, maxTokens: 4096, timeoutMs: 120000,
+    })
+    expect(() => parseEvaluationLaunchArguments(['m3-smoke'])).toThrow('固定 case')
+    expect(() => parseEvaluationLaunchArguments(['m3-smoke', 'bugfix-protected-test'])).toThrow('固定 case')
+    expect(canonicalEvaluationCommand('eval:m3-smoke')).toBe('tsx eval/launch.ts m3-smoke exact-file')
   })
 
   it('entry 与 public invocation 双向校验，孤立 public entry fail closed', () => {

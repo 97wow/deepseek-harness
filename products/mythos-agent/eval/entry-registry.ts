@@ -6,6 +6,7 @@ export type EvaluationEntryId =
   | 'comprehensive'
   | 'journey'
   | 'journey-repeat'
+  | 'm3-smoke'
   | 'qwen-local'
   | 'qwen-local-benchmark'
   | 'real-repository'
@@ -17,10 +18,18 @@ export interface EvaluationEntryDefinition {
   environment: ReadonlyMap<string, string>
   environmentDefaults?: ReadonlyMap<string, string>
   internalDependencies: readonly string[]
+  fixedCaseIds?: readonly string[]
   load(): Promise<unknown>
   parameters: {
     caseIds: boolean
     options: ReadonlyMap<string, readonly string[]>
+  }
+  smokePolicy?: {
+    attempts: 1
+    concurrency: 1
+    maxRetries: 0
+    maxTokens: number
+    timeoutMs: number
   }
   visibility: 'public'
 }
@@ -76,6 +85,19 @@ const evaluationEntryDefinitions: readonly (readonly [EvaluationEntryId, Evaluat
     parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
     internalDependencies: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts',
       'eval/options.ts', 'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
+  }],
+  ['m3-smoke', {
+    commitment: 'standard', load: async () => await import('./run.js'),
+    parameters: { caseIds: true, options: noOptions },
+    environment: immutableMap([
+      ['MYTHOS_EVAL_ENTRY', 'standard'], ['MYTHOS_EVAL_PATCH', 'eval/overlays/m3-smoke.yml'],
+      ['MYTHOS_EVAL_SUITE', 'release'], ['MYTHOS_EVAL_TIMEOUT_MS', '120000'],
+    ]),
+    fixedCaseIds: Object.freeze(['exact-file']),
+    smokePolicy: Object.freeze({ attempts: 1, concurrency: 1, maxRetries: 0, maxTokens: 4096, timeoutMs: 120000 }),
+    visibility: 'public',
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/runtime-evidence.ts',
+      'eval/runtime-evidence-observer.ts', 'eval/overlays/runtime-evidence.yml', 'eval/overlays/m3-smoke.yml'],
   }],
   ['qwen-local', {
     commitment: 'qwen-local', load: async () => await import('./run.js'),
@@ -145,6 +167,7 @@ export const publicEvaluationScripts = new Map<string, PublicEvaluationInvocatio
   ['eval:comprehensive:repeat', { args: ['--suite', 'all'], entryId: 'repeat' }],
   ['eval:journey', { args: [], entryId: 'journey' }],
   ['eval:journey:repeat', { args: [], entryId: 'journey-repeat' }],
+  ['eval:m3-smoke', { args: ['exact-file'], entryId: 'm3-smoke' }],
   ['eval:qwen-local', { args: [], entryId: 'qwen-local' }],
   ['eval:real-repo', { args: [], entryId: 'real-repository' }],
   ['eval:repeat', { args: [], entryId: 'repeat' }],
@@ -166,7 +189,8 @@ export const evaluationRuntimeSourceFiles = Object.freeze([
   'eval/repeat-journeys.ts', 'eval/advanced-journeys.ts', 'eval/advanced-journey-configuration.ts',
   'eval/run-advanced-journeys.ts', 'eval/repeat-advanced-journeys.ts', 'eval/real-repo-cases.ts',
   'eval/real-repo-configuration.ts', 'eval/run-real-repo.ts', 'eval/qwen-local-benchmark.ts', 'eval/repeat.ts',
-  'eval/cases.ts', 'eval/options.ts', 'eval/session-metrics.ts', 'flywheel/analysis.ts', 'flywheel/analyze.ts',
+  'eval/cases.ts', 'eval/options.ts', 'eval/session-metrics.ts', 'eval/runtime-evidence.ts',
+  'eval/runtime-evidence-observer.ts', 'flywheel/analysis.ts', 'flywheel/analyze.ts',
   'flywheel/archive.ts', 'flywheel/build.ts', 'flywheel/comprehensive-gate.ts', 'flywheel/journey-gate.ts',
   'flywheel/advanced-journey-gate.ts', 'flywheel/real-repo-scope-gate.ts', 'flywheel/gate-policy.ts', 'flywheel/gate.ts',
   'flywheel/server-dataset.ts', 'flywheel/server-import.ts', 'flywheel/server-analyze.ts', 'flywheel/server-gate.ts',
@@ -240,6 +264,8 @@ export function parseEvaluationLaunchArguments(argv: readonly string[]): Evaluat
     }
     caseIds.push(parameter)
   }
+  if (entry.fixedCaseIds !== undefined
+    && JSON.stringify(caseIds) !== JSON.stringify(entry.fixedCaseIds)) throw new Error('评测 entry 的固定 case 集合不匹配')
   return { caseIds, entry, entryId, options }
 }
 

@@ -19,6 +19,7 @@
     "eval:comprehensive:repeat": "tsx eval/launch.ts repeat --suite all",
     "eval:journey": "tsx eval/launch.ts journey",
     "eval:journey:repeat": "tsx eval/launch.ts journey-repeat",
+    "eval:m3-smoke": "tsx eval/launch.ts m3-smoke exact-file",
     "eval:advanced-journey": "tsx eval/launch.ts advanced-journey",
     "eval:advanced-journey:repeat": "tsx eval/launch.ts advanced-journey-repeat",
     "eval:qwen-local": "tsx eval/launch.ts qwen-local",
@@ -41,7 +42,7 @@
     "smoke:web": "tsx product/smoke-web.ts",
     "test": "vitest run --config vitest.config.ts",
     "typecheck:control": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node control/index.ts control/controller.ts control/memory.ts control/policy.ts control/project-model.ts control/review.ts control/watchdog.ts",
-    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/workspace-modules.d.ts eval/entry-registry.ts eval/execution-snapshot.ts eval/launch.ts eval/run.ts eval/run-journeys.ts eval/journeys.ts eval/journey-configuration.ts eval/journey-turn-runner.ts eval/repeat-journeys.ts eval/advanced-journeys.ts eval/advanced-journey-configuration.ts eval/run-advanced-journeys.ts eval/repeat-advanced-journeys.ts eval/real-repo-cases.ts eval/real-repo-configuration.ts eval/run-real-repo.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/comprehensive-gate.ts flywheel/journey-gate.ts flywheel/advanced-journey-gate.ts flywheel/real-repo-scope-gate.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts",
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/workspace-modules.d.ts eval/entry-registry.ts eval/execution-snapshot.ts eval/launch.ts eval/run.ts eval/run-journeys.ts eval/journeys.ts eval/journey-configuration.ts eval/journey-turn-runner.ts eval/repeat-journeys.ts eval/advanced-journeys.ts eval/advanced-journey-configuration.ts eval/run-advanced-journeys.ts eval/repeat-advanced-journeys.ts eval/real-repo-cases.ts eval/real-repo-configuration.ts eval/run-real-repo.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts eval/runtime-evidence.ts eval/runtime-evidence-observer.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/comprehensive-gate.ts flywheel/journey-gate.ts flywheel/advanced-journey-gate.ts flywheel/real-repo-scope-gate.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts",
     "web": "tsx product/launch.ts web"
   },
   "dependencies": {
