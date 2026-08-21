@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { evaluationEntryRegistry, registryEntryIdsForCommitment, type EvaluationEntry, type EvaluationEntryId } from './entry-registry.js'
+import { collectRelativeImportClosure } from './import-closure.js'
 
 export type { EvaluationEntry, EvaluationEntryId } from './entry-registry.js'
 
@@ -21,7 +22,8 @@ export type FailureCategory = 'model_failure' | 'harness_failure' | 'infrastruct
 
 const commonFiles = [
   'package.json', 'home/profiles/mythos/cordis.yml', 'home/profiles/mythos/cordis.patch.yml',
-  'home/profiles/mythos/package.json', 'eval/entry-registry.ts', 'eval/launch.ts', 'eval/report-contract.ts', 'eval/session-metrics.ts',
+  'home/profiles/mythos/package.json', 'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts',
+  'eval/report-contract.ts', 'eval/session-metrics.ts',
 ] as const
 
 export interface ReportCase {
@@ -105,7 +107,8 @@ export function implementationFiles(entry: EvaluationEntry, overlays: readonly s
   for (const overlay of overlays) {
     if (!knownOverlays.has(overlay)) throw new Error('评测 overlay 不在中央已知集合')
   }
-  const dependencies = registryEntryIdsForCommitment(entry).flatMap(entryId => evaluationEntryRegistry[entryId].dependencies)
+  const dependencies = registryEntryIdsForCommitment(entry)
+    .flatMap(entryId => evaluationEntryRegistry.get(entryId)!.dependencies)
   return [...new Set([...commonFiles, ...dependencies, ...overlays])].sort()
 }
 
@@ -121,11 +124,19 @@ function resolveEvaluationEntryId(entry: EvaluationEntry, config: Readonly<Recor
 }
 
 function implementationFilesForEntry(entryId: EvaluationEntryId, overlays: readonly string[] = []): string[] {
-  const entry = evaluationEntryRegistry[entryId]
+  const entry = evaluationEntryRegistry.get(entryId)
+  if (entry === undefined) throw new Error('未知评测 entry ID')
   for (const overlay of overlays) {
     if (!knownOverlays.has(overlay)) throw new Error('评测 overlay 不在中央已知集合')
   }
   return [...new Set([...commonFiles, ...entry.dependencies, ...overlays])].sort()
+}
+
+async function trackedProductFiles(productRoot: string): Promise<Set<string>> {
+  const { stdout } = await execFileAsync('git', ['ls-files', '--cached', '-z', '--', '.'], {
+    cwd: productRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+  })
+  return new Set(stdout.split('\0').filter(path => path !== ''))
 }
 
 export function endpointCommitment(value: unknown): { algorithm: 'sha256'; sha256: string } {
@@ -153,12 +164,21 @@ export async function evaluationCommitment(input: {
   const { endpoint, ...parameters } = input.config
   const endpointDigest = endpointCommitment(endpoint)
   const entryId = input.entryId ?? resolveEvaluationEntryId(input.entry, input.config)
-  const registryEntry = evaluationEntryRegistry[entryId]
+  const registryEntry = evaluationEntryRegistry.get(entryId)
+  if (registryEntry === undefined) throw new Error('未知评测 entry ID')
   if (registryEntry.commitment !== input.entry) throw new Error('评测 entry ID 与 commitment 归属不一致')
-  const paths = implementationFilesForEntry(entryId, input.overlays).map(path => resolve(root, path))
+  const explicitFiles = implementationFilesForEntry(entryId, input.overlays)
+  const trackedFiles = await trackedProductFiles(root)
+  const closureRoots = explicitFiles.filter(path => path.endsWith('.ts'))
+  const importClosure = await collectRelativeImportClosure(root, closureRoots, trackedFiles)
+  const paths = [...new Set([...explicitFiles, ...importClosure])]
+    .sort()
+    .map(path => resolve(root, path))
   const files = await Promise.all(paths.map(async path => {
     if (!path.startsWith(`${root}${sep}`)) throw new Error('评测 commitment 文件越出产品目录')
-    return { path: relative(root, path).replaceAll(sep, '/'), sha256: createHash('sha256').update(await readFile(path)).digest('hex') }
+    const repositoryPath = relative(root, path).replaceAll(sep, '/')
+    if (!trackedFiles.has(repositoryPath)) throw new Error('评测 commitment 禁止读取 untracked 文件')
+    return { path: repositoryPath, sha256: createHash('sha256').update(await readFile(path)).digest('hex') }
   }))
   return {
     algorithm: 'sha256-v2', entry: input.entry, entryId, files,
@@ -333,7 +353,7 @@ export function parseEvaluationReport(value: unknown): Record<string, unknown> {
       || typeof implementation.sha256 !== 'string' || !Array.isArray(implementation.files)
       || !entriesInclude(implementation.entry) || typeof record(runtime.endpoint).sha256 !== 'string'
       || (implementation.entryId !== undefined
-        && (typeof implementation.entryId !== 'string' || !(implementation.entryId in evaluationEntryRegistry)))
+        && (typeof implementation.entryId !== 'string' || !evaluationEntryRegistry.has(implementation.entryId as EvaluationEntryId)))
       || typeof runtime.parametersSha256 !== 'string'
       || typeof record(identity.server).status !== 'string' || typeof source.gitHead !== 'string'
       || typeof worktree.trackedDirty !== 'boolean' || typeof worktree.untrackedPresent !== 'boolean') {

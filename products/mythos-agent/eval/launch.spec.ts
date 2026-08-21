@@ -11,9 +11,16 @@ describe('结构化评测 launcher', () => {
     expect(runtime.environment).toMatchObject({ MYTHOS_EVAL_ENTRY_ID: 'repeat', MYTHOS_EVAL_SUITE: 'all' })
   })
 
-  it('未知 entry 在 loader 调用前 fail closed', async () => {
+  it.each(['unknown', 'toString', 'constructor', '__proto__', 'prototype'])('%s entry 在 loader 调用前 fail closed', async entryId => {
     const loader = vi.fn(async () => undefined)
-    await expect(launchEvaluation(['unknown'], loader, { argv: ['node', 'launch'], environment: {} })).rejects.toThrow('未知')
+    await expect(launchEvaluation([entryId], loader, { argv: ['node', 'launch'], environment: {} })).rejects.toThrow('未知')
+    expect(loader).not.toHaveBeenCalled()
+  })
+
+  it('repeat option 后移在 loader 调用前 fail closed', async () => {
+    const loader = vi.fn(async () => undefined)
+    await expect(launchEvaluation(['repeat', 'case-a', '--suite', 'all'], loader,
+      { argv: ['node', 'launch'], environment: {} })).rejects.toThrow('必须位于')
     expect(loader).not.toHaveBeenCalled()
   })
 })

@@ -19,8 +19,9 @@ export async function launchEvaluation(
   runtime: EvaluationLaunchRuntime = { argv: process.argv, environment: process.env },
 ): Promise<void> {
   const invocation = parseEvaluationLaunchArguments(parameters)
-  for (const [name, value] of Object.entries(invocation.entry.environment ?? {})) runtime.environment[name] = value
-  if (invocation.options.suite !== undefined) runtime.environment.MYTHOS_EVAL_SUITE = invocation.options.suite
+  for (const [name, value] of invocation.entry.environment) runtime.environment[name] = value
+  const suite = invocation.options.get('suite')
+  if (suite !== undefined) runtime.environment.MYTHOS_EVAL_SUITE = suite
   runtime.environment.MYTHOS_EVAL_ENTRY_ID = invocation.entryId
   runtime.argv.splice(0, runtime.argv.length, runtime.argv[0] ?? process.execPath, invocation.entry.module, ...invocation.caseIds)
   await loader(invocation.entry.module)

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   buildEvaluationReport,
@@ -17,7 +18,8 @@ import {
   type EvaluationEntry,
   type ReportCase,
 } from './report-contract.js'
-import { evaluationEntryRegistry, type EvaluationEntryId } from './entry-registry.js'
+import { evaluationEntryRegistry } from './entry-registry.js'
+import { collectRelativeImportClosure } from './import-closure.js'
 
 const execFileAsync = promisify(execFile)
 const entries: EvaluationEntry[] = ['advanced-journey', 'journey', 'qwen-local', 'real-repository', 'standard']
@@ -89,8 +91,8 @@ describe('M3 + DSH 评测证据报告', () => {
     ]))
   })
 
-  it.each(Object.keys(evaluationEntryRegistry) as EvaluationEntryId[])('%s registry entry 的每个关键文件变更都会改变 commitment', async entryId => {
-    const definition = evaluationEntryRegistry[entryId]
+  it.each([...evaluationEntryRegistry.keys()])('%s registry entry 的每个关键文件变更都会改变 commitment', async entryId => {
+    const definition = evaluationEntryRegistry.get(entryId)!
     const { productRoot } = await fixture()
     const overlays = definition.commitment === 'advanced-journey' ? ['eval/overlays/journey-subagent.yml'] : []
     let previous = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 },
@@ -104,8 +106,8 @@ describe('M3 + DSH 评测证据报告', () => {
     }
   })
 
-  it.each(Object.keys(evaluationEntryRegistry) as EvaluationEntryId[])('%s 的结构化运行参数改变 commitment', async entryId => {
-    const definition = evaluationEntryRegistry[entryId]
+  it.each([...evaluationEntryRegistry.keys()])('%s 的结构化运行参数改变 commitment', async entryId => {
+    const definition = evaluationEntryRegistry.get(entryId)!
     const { productRoot } = await fixture()
     const first = await evaluationCommitment({ config: { caseIds: ['a'], endpoint: 'https://example.invalid/v1', marker: 'a' },
       entry: definition.commitment, entryId, productRoot })
@@ -116,11 +118,54 @@ describe('M3 + DSH 评测证据报告', () => {
   })
 
   it('registry 显式覆盖内部 runner 与 launcher commitment', () => {
-    expect(evaluationEntryRegistry.journey.dependencies).toContain('eval/journey-turn-runner.ts')
-    expect(evaluationEntryRegistry['advanced-journey'].dependencies).toContain('eval/journey-turn-runner.ts')
+    expect(evaluationEntryRegistry.get('journey')!.dependencies).toContain('eval/journey-turn-runner.ts')
+    expect(evaluationEntryRegistry.get('advanced-journey')!.dependencies).toContain('eval/journey-turn-runner.ts')
+    expect(evaluationEntryRegistry.get('journey-repeat')!.dependencies).toContain('eval/options.ts')
+    expect(evaluationEntryRegistry.get('advanced-journey-repeat')!.dependencies).toContain('eval/options.ts')
     for (const entry of entries) {
-      expect(implementationFiles(entry)).toEqual(expect.arrayContaining(['eval/entry-registry.ts', 'eval/launch.ts']))
+      expect(implementationFiles(entry)).toEqual(expect.arrayContaining([
+        'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts', 'package.json',
+      ]))
     }
+  })
+
+  it.each([...evaluationEntryRegistry.keys()])('%s commitment 覆盖模块的完整本仓库相对 import 闭包', async entryId => {
+    const definition = evaluationEntryRegistry.get(entryId)!
+    const productRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const commitment = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: definition.commitment, entryId, productRoot })
+    const roots = commitment.files.map(file => file.path).filter(path => path.endsWith('.ts'))
+    const closure = await collectRelativeImportClosure(productRoot, roots)
+    expect(commitment.files.map(file => file.path)).toEqual(expect.arrayContaining(closure))
+  })
+
+  it('新增相对 import 自动进入 commitment 且被导入文件变异改变 SHA', async () => {
+    const { productRoot, repoRoot } = await fixture()
+    await writeFile(join(productRoot, 'eval/nested-commitment.ts'), 'export const marker = 1\n')
+    await writeFile(join(productRoot, 'eval/run.ts'), "import './nested-commitment.js'\n")
+    await execFileAsync('git', ['add', 'product/eval/nested-commitment.ts'], { cwd: repoRoot })
+    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'standard', entryId: 'standard', productRoot })
+    expect(first.files.map(file => file.path)).toContain('eval/nested-commitment.ts')
+    await writeFile(join(productRoot, 'eval/nested-commitment.ts'), 'export const marker = 2\n')
+    const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'standard', entryId: 'standard', productRoot })
+    expect(second.sha256).not.toBe(first.sha256)
+  })
+
+  it('commitment 对 untracked 相对 import fail closed 且不回显正文', async () => {
+    const { productRoot } = await fixture()
+    await writeFile(join(productRoot, 'eval/untracked-sensitive.ts'), 'secret-user-body-must-not-leak\n')
+    await writeFile(join(productRoot, 'eval/run.ts'), "import './untracked-sensitive.js'\n")
+    let message = ''
+    try {
+      await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+        entry: 'standard', entryId: 'standard', productRoot })
+    } catch (error) {
+      message = String(error)
+    }
+    expect(message).toContain('无法解析')
+    expect(message).not.toContain('secret-user-body-must-not-leak')
   })
 
   it('endpoint commitment 对完整 URL 语义敏感并拒绝 userinfo', () => {
