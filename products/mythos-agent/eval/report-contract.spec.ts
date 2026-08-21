@@ -10,6 +10,7 @@ import {
   buildEvaluationReport,
   classifyFailure,
   endpointCommitment,
+  evaluationReportCanonicalSha256,
   evaluationCommitment,
   implementationFiles,
   parseEvaluationReport,
@@ -231,6 +232,28 @@ describe('M3 + DSH 评测证据报告', () => {
       expect(parseEvaluationReport(serialized, JSON.parse(JSON.stringify(attestation)) as EvaluationReportAttestation))
         .toMatchObject({ acceptance: { failures: expect.arrayContaining(['trusted_attestation_invalid']), passed: false }, passed: false })
       expect(parseEvaluationReport(serialized, attestation)).toMatchObject({ acceptance: { passed: true }, passed: true })
+
+      const originalCase = (serialized.cases as Record<string, unknown>[])[0]!
+      const schemaOutsideCases = [
+        { ...originalCase, processExitCode: -0 },
+        { ...originalCase, durationMs: Number.NaN },
+        { ...originalCase, durationMs: Number.POSITIVE_INFINITY },
+        { ...originalCase, durationMs: Number.NEGATIVE_INFINITY },
+        { ...originalCase, durationMs: undefined },
+        Object.fromEntries(Object.entries(originalCase).filter(([key]) => key !== 'durationMs')),
+      ]
+      for (const mutatedCase of schemaOutsideCases) {
+        expect(() => parseEvaluationReport({ ...serialized, cases: [mutatedCase] }, attestation)).toThrow()
+      }
+
+      expect(evaluationReportCanonicalSha256({ value: null })).not.toBe(evaluationReportCanonicalSha256({}))
+      expect(() => evaluationReportCanonicalSha256({ value: undefined })).toThrow('undefined')
+      expect(evaluationReportCanonicalSha256({ values: ['same'] }))
+        .not.toBe(evaluationReportCanonicalSha256({ values: ['same', 'same'] }))
+      expect(evaluationReportCanonicalSha256({ value: '\u00e9' }))
+        .not.toBe(evaluationReportCanonicalSha256({ value: 'e\u0301' }))
+      expect(evaluationReportCanonicalSha256({ alpha: 'a', omega: 'o' }))
+        .toBe(evaluationReportCanonicalSha256({ omega: 'o', alpha: 'a' }))
 
       const mutations: Record<string, unknown>[] = [
         { ...serialized, runId: 'run-tampered' },

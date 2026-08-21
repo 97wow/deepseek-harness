@@ -100,6 +100,65 @@ function canonical(value: unknown): string {
   return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonical(record[key])}`).join(',')}}`
 }
 
+function strictNumberCanonical(value: number, path: string): string {
+  if (!Number.isFinite(value) || Object.is(value, -0) || value < 0) throw new Error(`v2 评测报告数值域无效：${path}`)
+  if (!path.endsWith('.billing.amount') && !Number.isSafeInteger(value)) {
+    throw new Error(`v2 评测报告整数域无效：${path}`)
+  }
+  const bytes = Buffer.allocUnsafe(8)
+  bytes.writeDoubleBE(value)
+  return `d${bytes.toString('hex')}`
+}
+
+function strictStringCanonical(value: string): string {
+  let units = ''
+  for (let index = 0; index < value.length; index += 1) units += value.charCodeAt(index).toString(16).padStart(4, '0')
+  return `s${String(value.length)}:${units}`
+}
+
+/** Injective over the accepted v2 report value domain; it never applies JSON coercions or Unicode normalization. */
+function strictCanonical(value: unknown, path = '$', ancestors = new Set<object>()): string {
+  if (value === null) return 'z'
+  if (value === undefined) throw new Error(`v2 评测报告不得包含 undefined：${path}`)
+  if (typeof value === 'boolean') return value ? 'b1' : 'b0'
+  if (typeof value === 'number') return strictNumberCanonical(value, path)
+  if (typeof value === 'string') return strictStringCanonical(value)
+  if (typeof value !== 'object') throw new Error(`v2 评测报告包含不支持的值：${path}`)
+  if (ancestors.has(value)) throw new Error(`v2 评测报告不得包含循环引用：${path}`)
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      const keys = Object.keys(value)
+      const ownKeys = Reflect.ownKeys(value)
+      if (keys.length !== value.length || keys.some((key, index) => key !== String(index))
+        || ownKeys.length !== keys.length + 1 || !ownKeys.includes('length')
+        || keys.some(key => {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key)
+          return descriptor === undefined || !('value' in descriptor)
+        })) {
+        throw new Error(`v2 评测报告数组必须连续且不得包含附加键：${path}`)
+      }
+      return `a${String(value.length)}[${value.map((item, index) => strictCanonical(item, `${path}[${String(index)}]`, ancestors)).join('')}]`
+    }
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) throw new Error(`v2 评测报告对象原型无效：${path}`)
+    const ownKeys = Reflect.ownKeys(value)
+    if (ownKeys.some(key => typeof key === 'symbol')) throw new Error(`v2 评测报告不得包含 symbol 键：${path}`)
+    const keys = Object.keys(value).sort()
+    if (keys.length !== ownKeys.length) throw new Error(`v2 评测报告不得包含隐藏键：${path}`)
+    const objectValue = value as Record<string, unknown>
+    return `o${String(keys.length)}{${keys.map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (descriptor === undefined || !('value' in descriptor)) throw new Error(`v2 评测报告不得包含访问器：${path}.${key}`)
+      return `${strictStringCanonical(key)}${strictCanonical(objectValue[key], `${path}.${key}`, ancestors)}`
+    }).join('')}}`
+  } finally { ancestors.delete(value) }
+}
+
+export function evaluationReportCanonicalSha256(value: unknown): string {
+  return createHash('sha256').update(strictCanonical(value)).digest('hex')
+}
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
@@ -110,11 +169,15 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
 }
 
 function nonNegativeInteger(value: unknown): number | null {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0) ? value : null
 }
 
 function finiteNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
+  return typeof value === 'number' && Number.isFinite(value) && !Object.is(value, -0) ? value : null
+}
+
+function nullableNonNegativeInteger(value: unknown): boolean {
+  return value === null || nonNegativeInteger(value) !== null
 }
 
 function safeString(value: unknown): string | null {
@@ -144,6 +207,18 @@ function projectMetrics(value: unknown): Record<string, unknown> | null {
   const turnReason = safeTurnReason(metrics.turnReason)
   if (turnReason !== null) projected.turnReason = turnReason
   return projected
+}
+
+function validProjectedMetrics(value: unknown): boolean {
+  if (value === null) return true
+  const metrics = record(value)
+  const numericKeys = ['cacheReadTokens', 'compactionSummaries', 'experienceRecoveries', 'failedToolResults', 'inputTokens',
+    'maxSubagentCallsPerStep', 'mutationCalls', 'outputTokens', 'resumeBoundaries', 'steps', 'toolResults', 'turns']
+  if (!hasOnlyKeys(metrics, [...numericKeys, 'evidenceAfterMutation', 'turnReason', 'usageObserved'])) return false
+  if (numericKeys.some(key => metrics[key] !== undefined && nonNegativeInteger(metrics[key]) === null)) return false
+  if (metrics.evidenceAfterMutation !== undefined && typeof metrics.evidenceAfterMutation !== 'boolean') return false
+  if (metrics.usageObserved !== undefined && typeof metrics.usageObserved !== 'boolean') return false
+  return metrics.turnReason === undefined || safeTurnReason(metrics.turnReason) !== null
 }
 
 function resolveEvaluationEntryId(entry: EvaluationEntry, config: Readonly<Record<string, unknown>>): EvaluationEntryId {
@@ -484,10 +559,10 @@ async function projectEvaluationReport(input: EvaluationReportInput): Promise<Re
 }
 
 function reportObservationSha256(report: Record<string, unknown>): string {
-  return createHash('sha256').update(canonical({
+  return evaluationReportCanonicalSha256({
     cases: report.cases,
     serverIdentity: record(record(report.modelIdentity).server),
-  })).digest('hex')
+  })
 }
 
 function issueReportAttestation(report: Record<string, unknown>): EvaluationReportAttestation {
@@ -497,7 +572,7 @@ function issueReportAttestation(report: Record<string, unknown>): EvaluationRepo
   const attestation = Object.freeze({
     artifactSha256: safeString(runtime.artifactSha256),
     observationSha256: reportObservationSha256(report),
-    reportSha256: createHash('sha256').update(canonical(report)).digest('hex'),
+    reportSha256: evaluationReportCanonicalSha256(report),
     runId: safeString(report.runId) ?? '',
     sourceCommitmentSha256: safeString(snapshot.sha256) ?? '',
     sourceGitCommit: safeString(snapshot.gitCommit) ?? '',
@@ -512,7 +587,7 @@ function attestationMatches(report: Record<string, unknown>, attestation: Evalua
   const implementation = record(report.implementation)
   const runtime = record(implementation.runtime)
   const snapshot = record(implementation.snapshot)
-  return attestation.reportSha256 === createHash('sha256').update(canonical(report)).digest('hex')
+  return attestation.reportSha256 === evaluationReportCanonicalSha256(report)
     && attestation.runId === report.runId
     && attestation.artifactSha256 === (safeString(runtime.artifactSha256) ?? null)
     && attestation.sourceCommitmentSha256 === snapshot.sha256
@@ -531,6 +606,7 @@ Record<string, unknown> {
 
 export async function buildAttestedEvaluationReport(input: EvaluationReportInput): Promise<AttestedEvaluationReport> {
   const report = await projectEvaluationReport(input)
+  parseEvaluationReport(report)
   const attestation = issueReportAttestation(report)
   return { attestation, report: parseEvaluationReport(report, attestation) }
 }
@@ -548,13 +624,44 @@ export function parseEvaluationReport(
   if (report.reportVersion !== 1 && report.reportVersion !== 2) throw new Error('不支持的评测报告版本')
   if (!Array.isArray(report.cases)) throw new Error('评测报告缺少 cases')
   if (report.reportVersion === 2) {
+    strictCanonical(report)
     const acceptance = record(report.acceptance)
     const implementation = record(report.implementation)
     const runtime = record(implementation.runtime)
     const identity = record(report.modelIdentity)
     const source = record(report.source)
     const worktree = record(source.worktree)
+    const baseline = record(report.baseline)
+    const replay = report.replay === undefined ? null : record(report.replay)
+    const requestedIdentity = record(identity.requested)
+    const dirtyDiff = record(source.dirtyDiff)
+    const dsh = record(source.dsh)
+    const projectedShapeInvalid = report.baseline !== undefined && (
+      !hasOnlyKeys(baseline, ['configurationSha256', 'dshVersion', 'mythosVersion', 'suite', 'timeoutMs', 'variant'])
+      || ['configurationSha256', 'dshVersion', 'mythosVersion', 'suite', 'timeoutMs', 'variant']
+        .some(key => !Object.hasOwn(baseline, key))
+      || !nullableNonNegativeInteger(baseline.timeoutMs)
+      || ['configurationSha256', 'dshVersion', 'mythosVersion', 'suite', 'variant']
+        .some(key => !(baseline[key] === null || safeString(baseline[key]) !== null))
+      || !(report.completedAt === null || safeTimestamp(report.completedAt) !== null)
+      || !(report.startedAt === null || safeTimestamp(report.startedAt) !== null)
+      || !(report.profile === null || safeString(report.profile) !== null)
+      || safeString(report.runId) === null
+      || (replay !== null && (!hasOnlyKeys(replay, ['iteration', 'total'])
+        || !Object.hasOwn(replay, 'iteration') || !Object.hasOwn(replay, 'total')
+        || !nullableNonNegativeInteger(replay.iteration) || !nullableNonNegativeInteger(replay.total)))
+      || !hasOnlyKeys(identity, ['requested', 'server']) || !hasOnlyKeys(requestedIdentity, ['model', 'provider'])
+      || !['model', 'provider'].every(key => requestedIdentity[key] === null || safeString(requestedIdentity[key]) !== null)
+      || !hasOnlyKeys(source, ['dirtyDiff', 'dsh', 'gitHead', 'productVersion', 'worktree'])
+      || !hasOnlyKeys(dirtyDiff, ['algorithm', 'scope', 'sha256']) || dirtyDiff.algorithm !== 'sha256'
+      || dirtyDiff.scope !== 'tracked-head-diff-only' || safeString(dirtyDiff.sha256) === null
+      || !hasOnlyKeys(dsh, ['declaredCommit', 'declaredVersion'])
+      || !['declaredCommit', 'declaredVersion'].every(key => dsh[key] === null || safeString(dsh[key]) !== null)
+      || !(source.productVersion === null || safeString(source.productVersion) !== null)
+    )
     if (!hasOnlyKeys(report, ['acceptance', 'baseline', 'cases', 'completedAt', 'implementation', 'modelIdentity', 'passed', 'profile', 'replay', 'reportVersion', 'runId', 'source', 'startedAt'])
+      || !hasOnlyKeys(acceptance, ['failures', 'passed'])
+      || projectedShapeInvalid
       || typeof acceptance.passed !== 'boolean' || !Array.isArray(acceptance.failures)
       || typeof report.passed !== 'boolean' || typeof report.runId !== 'string'
       || typeof implementation.sha256 !== 'string' || !Array.isArray(implementation.files)
@@ -576,9 +683,21 @@ export function parseEvaluationReport(
       const expectedTokensVerified = testCase.observationSource === 'dsh_session_log'
         && record(testCase.metrics).usageObserved === true
         && [tokenValues.cache, tokenValues.input, tokenValues.output].every(value => nonNegativeInteger(value) !== null)
+      const requiredCaseKeys = ['accepted', 'billing', 'capabilityEligible', 'completionEvidence', 'durationMs', 'failure', 'id',
+        'metrics', 'observationSource', 'passed', 'processExitCode', 'tier', 'timedOut', 'verification']
       if (!hasOnlyKeys(testCase, ['accepted', 'billing', 'capabilityEligible', 'completionEvidence', 'durationMs', 'failure', 'id', 'metrics',
         'observationSource', 'passed', 'processExitCode', 'rawSession', 'relatedRawSessions', 'tier', 'timedOut', 'verification'])
+        || requiredCaseKeys.some(key => !Object.hasOwn(testCase, key))
         || typeof testCase.id !== 'string' || typeof testCase.passed !== 'boolean' || typeof testCase.accepted !== 'boolean'
+        || typeof testCase.capabilityEligible !== 'boolean' || typeof testCase.timedOut !== 'boolean'
+        || !nullableNonNegativeInteger(testCase.durationMs) || !nullableNonNegativeInteger(testCase.processExitCode)
+        || ![tokenValues.cache, tokenValues.input, tokenValues.output].every(nullableNonNegativeInteger)
+        || !validProjectedMetrics(testCase.metrics)
+        || !['dsh_session_log', 'unknown_unverified'].includes(String(testCase.observationSource))
+        || !(testCase.tier === null || safeString(testCase.tier) !== null)
+        || (testCase.rawSession !== undefined && (typeof testCase.rawSession !== 'string' || !safeSessionPath.test(testCase.rawSession)))
+        || (testCase.relatedRawSessions !== undefined && (!Array.isArray(testCase.relatedRawSessions)
+          || !testCase.relatedRawSessions.every(path => typeof path === 'string' && safeSessionPath.test(path))))
         || !['model_failure', 'harness_failure', 'infrastructure_failure', null].includes(failure.category as never)
         || billing.amount !== expectedBilling.amount || billing.currency !== expectedBilling.currency
         || billing.source !== expectedBilling.source || billing.verified !== expectedBilling.verified
@@ -593,6 +712,10 @@ export function parseEvaluationReport(
         || canonical(testCase.failure) !== canonical(expected.failure)) throw new Error('v2 评测报告 case 派生语义不一致')
     }
     const serverIdentity = record(identity.server)
+    if (!hasOnlyKeys(serverIdentity, ['deployment', 'model', 'provider', 'source', 'status'])
+      || ['deployment', 'model', 'provider', 'source', 'status'].some(key => !Object.hasOwn(serverIdentity, key))) {
+      throw new Error('v2 评测报告服务端身份 schema 无效')
+    }
     if (serverIdentity.status === 'observed'
       && (serverIdentity.source !== 'm3_provider_response'
         || [serverIdentity.deployment, serverIdentity.model, serverIdentity.provider].some(value => safeString(value) === null))) {
