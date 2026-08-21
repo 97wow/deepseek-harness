@@ -99,7 +99,7 @@ describe('结构化评测入口 registry', () => {
     expect(() => validateEvaluationRegistry()).not.toThrow()
     const entries = new Map<string, EvaluationEntryDefinition>(evaluationEntryRegistry)
     const standard = evaluationEntryRegistry.get('standard')!
-    entries.set('new-safe', { ...standard, module: 'eval/new-safe.ts' })
+    entries.set('new-safe', { ...standard, load: async () => undefined })
     expect(() => validateEvaluationRegistry(entries, publicEvaluationScripts)).toThrow('没有 script invocation')
 
     const invocations = new Map<string, PublicEvaluationInvocation>(publicEvaluationScripts)
@@ -118,5 +118,17 @@ describe('结构化评测入口 registry', () => {
     for (const definition of publicEvaluationScripts.values()) {
       expect(parseEvaluationLaunchArguments([definition.entryId, ...definition.args]).entryId).toBe(definition.entryId)
     }
+  })
+
+  it('registry view 与 entry loader 初始化后不可改写', () => {
+    const standard = evaluationEntryRegistry.get('standard')!
+    const original = standard.load
+    expect(Object.isFrozen(evaluationEntryRegistry)).toBe(true)
+    expect(Object.isFrozen(standard)).toBe(true)
+    expect('set' in evaluationEntryRegistry).toBe(false)
+    expect(() => {
+      (standard as EvaluationEntryDefinition & { load: () => Promise<unknown> }).load = async () => undefined
+    }).toThrow()
+    expect(standard.load).toBe(original)
   })
 })

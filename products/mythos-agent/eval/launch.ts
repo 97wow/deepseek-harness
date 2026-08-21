@@ -18,6 +18,7 @@ export async function launchEvaluation(
 ): Promise<void> {
   const invocation = parseEvaluationLaunchArguments(parameters)
   for (const [name, value] of invocation.entry.environment) runtime.environment[name] = value
+  for (const [name, value] of invocation.entry.environmentDefaults ?? []) runtime.environment[name] ??= value
   const suite = invocation.options.get('suite')
   if (suite !== undefined) runtime.environment.MYTHOS_EVAL_SUITE = suite
   runtime.environment.MYTHOS_EVAL_ENTRY_ID = invocation.entryId

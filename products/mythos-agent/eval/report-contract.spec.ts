@@ -25,10 +25,10 @@ const entries: EvaluationEntry[] = ['advanced-journey', 'journey', 'qwen-local',
 const fixtureEntryImports = [
   ['advanced-journey', './run-advanced-journeys.js'],
   ['advanced-journey-repeat', './repeat-advanced-journeys.js'],
-  ['comprehensive', './run-comprehensive.js'],
+  ['comprehensive', './run.js'],
   ['journey', './run-journeys.js'],
   ['journey-repeat', './repeat-journeys.js'],
-  ['qwen-local', './run-qwen-local.js'],
+  ['qwen-local', './run.js'],
   ['qwen-local-benchmark', './qwen-local-benchmark.js'],
   ['real-repository', './run-real-repo.js'],
   ['repeat', './repeat.js'],
@@ -49,8 +49,8 @@ async function fixture(): Promise<{ productRoot: string; repoRoot: string }> {
     const contents = name === 'package.json' ? JSON.stringify({
       mythos: { dshCommit: 'dsh-commit', dshVersion: '0.1.0-rc.8' }, version: '0.1.1',
     }) : name === 'eval/launch.ts' ? "import './entry-registry.js'\n"
-      : name === 'eval/entry-registry.ts' ? `export const evaluationEntryRegistry = new Map([\n${fixtureEntryImports
-        .map(([id, specifier]) => `  ['${id}', { load: async () => await import('${specifier}') }],`).join('\n')}\n])\n`
+      : name === 'eval/entry-registry.ts' ? `const evaluationEntryDefinitions = [\n${fixtureEntryImports
+        .map(([id, specifier]) => `  ['${id}', { load: async () => await import('${specifier}') }],`).join('\n')}\n]\n`
       : name === 'eval/journey-turn-runner.ts'
         ? ["import '@deepseek-ai/dsh-agent/src/model-selection.ts'", "import '@deepseek-ai/dsh-llm/message'",
           "import '@deepseek-ai/dsh-session/types'"].join('\n') + '\n'
@@ -138,7 +138,7 @@ describe('M3 + DSH 评测证据报告', () => {
 
   it('中央清单覆盖 Qwen 入口和 provider/model/endpoint/overlay/timeout/variant 设置逻辑', () => {
     expect(implementationFiles('qwen-local')).toEqual(expect.arrayContaining([
-      'eval/run-qwen-local.ts', 'eval/run.ts', 'eval/options.ts', 'eval/overlays/qwen-local.yml',
+      'eval/run.ts', 'eval/options.ts', 'eval/overlays/qwen-local.yml',
     ]))
   })
 
@@ -214,6 +214,25 @@ describe('M3 + DSH 评测证据报告', () => {
     expect(second.sha256).not.toBe(first.sha256)
   })
 
+  it.each(['export * from', 'export { marker } from'])('%s 第四 workspace package 纳入源码闭包与 SHA', async syntax => {
+    const { productRoot, repoRoot } = await fixture()
+    const packageRoot = join(repoRoot, 'packages/extra/fourth')
+    await mkdir(join(packageRoot, 'src'), { recursive: true })
+    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
+      exports: { '.': { default: './lib/index.js' } }, name: '@deepseek-ai/dsh-fourth',
+    }))
+    await writeFile(join(packageRoot, 'src/index.ts'), 'export const marker = 1\n')
+    await writeFile(join(productRoot, 'eval/run.ts'), `${syntax} '@deepseek-ai/dsh-fourth'\n`)
+    await execFileAsync('git', ['add', 'packages/extra/fourth'], { cwd: repoRoot })
+    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'standard', entryId: 'standard', productRoot })
+    expect(first.files.map(file => file.path)).toContain('workspace:packages/extra/fourth/src/index.ts')
+    await writeFile(join(packageRoot, 'src/index.ts'), 'export const marker = 2\n')
+    const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'standard', entryId: 'standard', productRoot })
+    expect(second.sha256).not.toBe(first.sha256)
+  })
+
   it('commitment 对 untracked 相对 import fail closed 且不回显正文', async () => {
     const { productRoot } = await fixture()
     await writeFile(join(productRoot, 'eval/untracked-sensitive.ts'), 'secret-user-body-must-not-leak\n')
@@ -269,11 +288,31 @@ describe('M3 + DSH 评测证据报告', () => {
       entry: 'standard', entryId: 'standard', productRoot })
     const registryPath = join(productRoot, 'eval/entry-registry.ts')
     const source = await readFile(registryPath, 'utf8')
-    await writeFile(registryPath, source.replace("import('./run.js')", "import('./repeat.js')"))
+    const changed = source.replace(
+      "['standard', { load: async () => await import('./run.js') }],",
+      "['standard', { load: async () => await import('./repeat.js') }],",
+    )
+    expect(changed).not.toBe(source)
+    await writeFile(registryPath, changed)
     const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
       entry: 'standard', entryId: 'standard', productRoot })
     expect(second.sha256).not.toBe(first.sha256)
     expect(second.files.map(file => file.path)).toContain('eval/repeat.ts')
+  })
+
+  it('registry loader 定义外的额外 dynamic import 使 commitment fail closed', async () => {
+    const { productRoot } = await fixture()
+    await appendFile(join(productRoot, 'eval/entry-registry.ts'), "\nvoid import('./run.js')\n")
+    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'standard', entryId: 'standard', productRoot })).rejects.toThrow('定义外 dynamic import')
+  })
+
+  it('registry 初始化后改写 entry.load 使 commitment fail closed', async () => {
+    const { productRoot } = await fixture()
+    await appendFile(join(productRoot, 'eval/entry-registry.ts'),
+      '\nevaluationEntryDefinitions[0][1].load = async () => undefined\n')
+    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'standard', entryId: 'standard', productRoot })).rejects.toThrow('初始化后改写 loader')
   })
 
   it('workspace package manifest 改写固定入口时 fail closed', async () => {

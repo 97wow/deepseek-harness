@@ -13,8 +13,11 @@ import {
   isExportDeclaration,
   isIdentifier,
   isImportDeclaration,
-  isNewExpression,
+  isNamedExports,
+  isNamedImports,
+  isNoSubstitutionTemplateLiteral,
   isObjectLiteralExpression,
+  isParenthesizedExpression,
   isPropertyAccessExpression,
   isPropertyAssignment,
   isStringLiteral,
@@ -27,6 +30,7 @@ import {
 export interface ImportClosureOptions {
   allowedFiles?: ReadonlySet<string>
   controlPathPrefix: string
+  expectedDynamicImports?: ReadonlyMap<string, readonly string[]>
   requiredDirectBareImports?: ReadonlyMap<string, ReadonlySet<string>>
   selectedDynamicImports?: ReadonlyMap<string, ReadonlySet<string>>
 }
@@ -51,7 +55,13 @@ interface WorkspacePackage {
   manifestPath: string
 }
 
-const bannedLoaderIdentifiers = new Set(['Function', 'createRequire', 'eval', 'globalThis', 'module', 'require'])
+const bannedLoaderIdentifiers = new Set([
+  'Function', 'constructor', 'createRequire', 'eval', 'global', 'globalThis', 'module', 'prototype', 'require',
+  'self', 'window',
+])
+const bannedLoaderProperties = new Set([
+  'Function', 'constructor', 'createRequire', 'eval', 'module', 'prototype', 'require',
+])
 const builtins = new Set([...builtinModules, ...builtinModules.map(name => 'node:' + name)])
 const sourceExtensions = new Set(['.cjs', '.cts', '.js', '.jsx', '.mjs', '.mts', '.ts', '.tsx'])
 
@@ -196,25 +206,34 @@ function manifestDeclares(manifest: PackageManifest, dependency: string): boolea
 
 interface SourceImports {
   directBareImports: Set<string>
-  dynamicImports: Set<string>
+  dynamicImports: string[]
   staticImports: Set<string>
 }
 
-function isNativeFunctionInspection(node: import('typescript').Identifier): boolean {
-  const prototype = node.parent
-  const toString = prototype.parent
-  const call = toString.parent
-  return node.text === 'Function'
-    && isPropertyAccessExpression(prototype) && prototype.expression === node && prototype.name.text === 'prototype'
-    && isPropertyAccessExpression(toString) && toString.expression === prototype && toString.name.text === 'toString'
-    && isPropertyAccessExpression(call) && call.expression === toString && call.name.text === 'call'
-    && isCallExpression(call.parent) && call.parent.expression === call
+function isRuntimeImport(node: import('typescript').ImportDeclaration): boolean {
+  const clause = node.importClause
+  if (clause === undefined) return true
+  if (clause.isTypeOnly) return false
+  if (clause.name !== undefined) return true
+  if (clause.namedBindings === undefined || !isNamedImports(clause.namedBindings)) return true
+  return clause.namedBindings.elements.some(element => !element.isTypeOnly)
 }
 
-function isFunctionIdentityComparison(node: import('typescript').Identifier): boolean {
-  return node.text === 'Function' && isBinaryExpression(node.parent)
-    && [SyntaxKind.EqualsEqualsEqualsToken, SyntaxKind.ExclamationEqualsEqualsToken,
-      SyntaxKind.EqualsEqualsToken, SyntaxKind.ExclamationEqualsToken].includes(node.parent.operatorToken.kind)
+function isRuntimeExport(node: import('typescript').ExportDeclaration): boolean {
+  if (node.isTypeOnly) return false
+  if (node.exportClause === undefined || !isNamedExports(node.exportClause)) return true
+  return node.exportClause.elements.some(element => !element.isTypeOnly)
+}
+
+function foldedString(node: import('typescript').Expression): string | null {
+  if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) return node.text
+  if (isParenthesizedExpression(node)) return foldedString(node.expression)
+  if (isBinaryExpression(node) && node.operatorToken.kind === SyntaxKind.PlusToken) {
+    const left = foldedString(node.left)
+    const right = foldedString(node.right)
+    return left === null || right === null ? null : left + right
+  }
+  return null
 }
 
 function analyzeSourceImports(source: string, sourcePath: string): SourceImports {
@@ -222,24 +241,35 @@ function analyzeSourceImports(source: string, sourcePath: string): SourceImports
   const diagnostics = (file as typeof file & { parseDiagnostics?: readonly unknown[] }).parseDiagnostics ?? []
   if (diagnostics.length > 0) throw new Error('静态模块图源码无法安全解析')
   const directBareImports = new Set<string>()
-  const dynamicImports = new Set<string>()
+  const dynamicImports: string[] = []
   const staticImports = new Set<string>()
   const visit = (node: import('typescript').Node): void => {
-    if (isIdentifier(node) && bannedLoaderIdentifiers.has(node.text)
-      && !isNativeFunctionInspection(node) && !isFunctionIdentityComparison(node)) {
+    if (isIdentifier(node) && bannedLoaderIdentifiers.has(node.text)) {
       throw new Error(`committed closure 出现禁用 loader 标识：${sourcePath}:${node.text}`)
     }
-    if (isPropertyAccessExpression(node) && bannedLoaderIdentifiers.has(node.name.text)) {
+    if (node.kind === SyntaxKind.ThisKeyword) {
+      throw new Error(`committed closure 出现禁用动态全局入口：${sourcePath}:this`)
+    }
+    if (isPropertyAccessExpression(node) && bannedLoaderProperties.has(node.name.text)) {
       throw new Error(`committed closure 出现禁用 loader 属性：${sourcePath}:${node.name.text}`)
     }
-    if (isElementAccessExpression(node) && isStringLiteral(node.argumentExpression)
-      && bannedLoaderIdentifiers.has(node.argumentExpression.text)) {
-      throw new Error(`committed closure 出现禁用 loader 属性：${sourcePath}:${node.argumentExpression.text}`)
+    if (isElementAccessExpression(node)) {
+      const property = foldedString(node.argumentExpression)
+      if (property !== null && bannedLoaderProperties.has(property)) {
+        throw new Error(`committed closure 出现禁用 loader 属性：${sourcePath}:${property}`)
+      }
     }
-    if ((isImportDeclaration(node) || isExportDeclaration(node)) && node.moduleSpecifier !== undefined
+    if (isBinaryExpression(node) && node.operatorToken.kind === SyntaxKind.EqualsToken) {
+      const assigned = isPropertyAccessExpression(node.left) ? node.left.name.text
+        : isElementAccessExpression(node.left) ? foldedString(node.left.argumentExpression) : null
+      if (assigned === 'load') throw new Error(`committed closure 禁止初始化后改写 loader：${sourcePath}`)
+    }
+    const runtimeEdge = isImportDeclaration(node) ? isRuntimeImport(node)
+      : isExportDeclaration(node) ? isRuntimeExport(node) : false
+    if (runtimeEdge && (isImportDeclaration(node) || isExportDeclaration(node)) && node.moduleSpecifier !== undefined
       && isStringLiteral(node.moduleSpecifier)) {
       staticImports.add(node.moduleSpecifier.text)
-      if (isImportDeclaration(node) && !node.moduleSpecifier.text.startsWith('.')
+      if (!node.moduleSpecifier.text.startsWith('.')
         && !builtins.has(node.moduleSpecifier.text)) {
         directBareImports.add(node.moduleSpecifier.text)
       }
@@ -248,7 +278,7 @@ function analyzeSourceImports(source: string, sourcePath: string): SourceImports
       if (node.arguments.length !== 1 || !isStringLiteral(node.arguments[0]!)) {
         throw new Error('import(expr) 必须使用单个固定字符串字面量')
       }
-      dynamicImports.add(node.arguments[0]!.text)
+      dynamicImports.push(node.arguments[0]!.text)
     }
     forEachChild(node, visit)
   }
@@ -264,18 +294,16 @@ function propertyName(node: import('typescript').ObjectLiteralElementLike): stri
 /** Extract the sole entry-id to literal-import mapping from the registry initializer. */
 export function extractEvaluationEntryImports(source: string): Map<string, string> {
   const file = createSourceFile('entry-registry.ts', source, ScriptTarget.Latest, true, ScriptKind.TS)
-  let registry: import('typescript').NewExpression | undefined
+  let definitions: import('typescript').ArrayLiteralExpression | undefined
   const find = (node: import('typescript').Node): void => {
-    if (isVariableDeclaration(node) && isIdentifier(node.name) && node.name.text === 'evaluationEntryRegistry'
-      && node.initializer !== undefined && isNewExpression(node.initializer)) registry = node.initializer
+    if (isVariableDeclaration(node) && isIdentifier(node.name) && node.name.text === 'evaluationEntryDefinitions'
+      && node.initializer !== undefined && isArrayLiteralExpression(node.initializer)) definitions = node.initializer
     forEachChild(node, find)
   }
   find(file)
-  const rows = registry?.arguments?.[0]
-  if (registry === undefined || registry.expression.getText(file) !== 'Map' || rows === undefined
-    || !isArrayLiteralExpression(rows)) throw new Error('evaluationEntryRegistry 必须是静态 Map initializer')
+  if (definitions === undefined) throw new Error('evaluation entry definitions 必须是静态 array initializer')
   const result = new Map<string, string>()
-  for (const row of rows.elements) {
+  for (const row of definitions.elements) {
     if (!isArrayLiteralExpression(row) || row.elements.length !== 2 || !isStringLiteral(row.elements[0]!)
       || !isObjectLiteralExpression(row.elements[1]!)) throw new Error('evaluation entry 必须是静态二元组')
     const entryId = row.elements[0]!.text
@@ -356,10 +384,21 @@ export async function collectRelativeImportClosure(
         }
       }
     }
+    const expectedDynamic = options.expectedDynamicImports?.get(currentPath)
+    if (expectedDynamic === undefined && analysis.dynamicImports.length > 0) {
+      throw new Error(`registry 以外禁止 dynamic import：${currentPath}`)
+    }
+    if (expectedDynamic !== undefined) {
+      const actual = [...analysis.dynamicImports].sort()
+      const expected = [...expectedDynamic].sort()
+      if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+        throw new Error('registry 出现 loader 定义外 dynamic import')
+      }
+    }
     const selectedDynamic = options.selectedDynamicImports?.get(currentPath)
     if (selectedDynamic !== undefined) {
       for (const specifier of selectedDynamic) {
-        if (!analysis.dynamicImports.has(specifier)) throw new Error('选定 entry loader 与源码不一致')
+        if (!analysis.dynamicImports.includes(specifier)) throw new Error('选定 entry loader 与源码不一致')
       }
     }
     const imports = new Set([
@@ -377,10 +416,8 @@ export async function collectRelativeImportClosure(
       if (workspacePackage !== undefined) {
         usedWorkspacePackages.add(parsed.name)
         workspace.files.add(workspacePackage.manifestPath)
-        if (requiredDirect?.has(specifier) === true) {
-          pending.push(await trackedOrdinaryFile(
-            canonicalRoot, sourceEntryForPackage(workspacePackage, parsed.subpath), options.allowedFiles))
-        }
+        pending.push(await trackedOrdinaryFile(
+          canonicalRoot, sourceEntryForPackage(workspacePackage, parsed.subpath), options.allowedFiles))
         continue
       }
       const importerManifest = nearestManifest(currentPath, productPrefix, productManifest, workspace.packages)

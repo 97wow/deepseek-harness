@@ -214,6 +214,7 @@ export async function evaluationCommitment(input: {
   const importClosure = await collectRelativeImportClosure(workspaceRoot, closureRoots, {
     allowedFiles: trackedFiles,
     controlPathPrefix: `${productPrefix}/eval/`,
+    expectedDynamicImports: new Map([[registryPath, [...entryImports.values()]]]),
     requiredDirectBareImports: new Map([
       [posix.join(productPrefix, 'eval/journey-turn-runner.ts'), journeyWorkspaceImports],
     ]),

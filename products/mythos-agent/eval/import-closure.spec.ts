@@ -34,6 +34,8 @@ describe('eval 静态模块图', () => {
     'const { require } = module', 'createRequire(import.meta.url)', '(0, eval)(source)', 'eval.call(null, source)',
     'new Function(source)', "globalThis['Function'](source)", 'require.bind(null)(target)', 'require.call(null, target)',
     'module[key](target)', 'globalThis[key](target)', "module['anything'](target)", "globalThis['anything'](target)",
+    "global['Fun' + 'ction'](source)", "global[(('Fu' + 'n') + ('ct' + 'ion'))](source)",
+    "({})['con' + 'structor']('return 1')()", "this['pro' + 'totype']['constructor'](source)",
   ])('任何 loader 标识或属性出现都 fail closed：%s', async source => {
     await expect(collect(source)).rejects.toThrow('禁用 loader')
   })
@@ -53,18 +55,21 @@ describe('eval 静态模块图', () => {
     const expected = new Map([
       ['advanced-journey', './run-advanced-journeys.js'],
       ['advanced-journey-repeat', './repeat-advanced-journeys.js'],
-      ['comprehensive', './run-comprehensive.js'],
+      ['comprehensive', './run.js'],
       ['journey', './run-journeys.js'],
       ['journey-repeat', './repeat-journeys.js'],
-      ['qwen-local', './run-qwen-local.js'],
+      ['qwen-local', './run.js'],
       ['qwen-local-benchmark', './qwen-local-benchmark.js'],
       ['real-repository', './run-real-repo.js'],
       ['repeat', './repeat.js'],
       ['standard', './run.js'],
     ])
     expect(extractEvaluationEntryImports(source)).toEqual(expected)
-    const changed = source.replace("load: async () => await import('./run.js')",
-      "load: async () => await import('./repeat.js')")
+    const changed = source.replace(
+      "['standard', {\n    commitment: 'standard', load: async () => await import('./run.js')",
+      "['standard', {\n    commitment: 'standard', load: async () => await import('./repeat.js')",
+    )
+    expect(changed).not.toBe(source)
     expect(extractEvaluationEntryImports(changed)).not.toEqual(expected)
   })
 
@@ -76,9 +81,9 @@ describe('eval 静态模块图', () => {
     await expect(collect(source)).rejects.toThrow('固定字符串字面量')
   })
 
-  it('固定字面量 import 进入递归 tracked 闭包', async () => {
+  it('固定静态 import 进入递归 tracked 闭包', async () => {
     const fixture = await workspace({
-      'product/eval/entry.ts': "void import('./dep.js')",
+      'product/eval/entry.ts': "import './dep.js'",
       'product/eval/dep.ts': "import './nested.js'",
       'product/eval/nested.ts': 'export {}',
     })
@@ -88,6 +93,10 @@ describe('eval 静态模块图', () => {
     expect(result.files).toEqual(expect.arrayContaining([
       'product/eval/dep.ts', 'product/eval/entry.ts', 'product/eval/nested.ts',
     ]))
+  })
+
+  it('registry 以外即使字面量 dynamic import 也 fail closed', async () => {
+    await expect(collect("void import('./dep.js')")).rejects.toThrow('registry 以外')
   })
 
   it('未知 bare package 与额外非字面量动态 import 均不会漏算', async () => {
