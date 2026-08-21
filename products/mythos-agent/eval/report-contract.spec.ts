@@ -69,6 +69,15 @@ async function reportInput(productRoot: string, repoRoot: string, cases: ReportC
   })
 }
 
+function registryMatches(scripts: Readonly<Record<string, string>>): boolean {
+  try {
+    const actual = [...new Set(Object.values(scripts).flatMap(extractEvaluationEntrypoints))].sort()
+    return JSON.stringify(actual) === JSON.stringify(Object.keys(evaluationEntrypoints).sort())
+  } catch {
+    return false
+  }
+}
+
 describe('M3 + DSH 评测证据报告', () => {
   it('tracked diff digest 稳定且与 untracked 状态分离', async () => {
     const { productRoot, repoRoot } = await fixture()
@@ -110,6 +119,8 @@ describe('M3 + DSH 评测证据报告', () => {
     }
     const files = Object.values(manifest.scripts).flatMap(extractEvaluationEntrypoints).sort()
     expect(Object.keys(evaluationEntrypoints).sort()).toEqual([...new Set(files)])
+    expect(new Set(files).size).toBe(10)
+    expect(Object.keys(evaluationEntrypoints)).toHaveLength(10)
     expect(evaluationEntrypoints['qwen-local-benchmark.ts']).toBe('qwen-local')
   })
 
@@ -125,8 +136,13 @@ describe('M3 + DSH 评测证据报告', () => {
     ['MODE=test env EXTRA=value tsx eval/new-entry.ts --case a', ['new-entry.ts']],
     ['env -u OLD MODE=test pnpm exec tsx eval/new-entry.ts --case a', ['new-entry.ts']],
     ['npx --yes tsx ./eval/new-entry.ts --case a', ['new-entry.ts']],
+    ['command tsx eval/new-safe.ts', ['new-safe.ts']],
+    ['MODE=test command -p time -p tsx ./eval/new-safe.ts --case a', ['new-safe.ts']],
     ['tsx eval/new\\-entry.ts --case a', ['new-entry.ts']],
     ['tsx product/launch.ts && tsx --tsconfig x eval/new-entry.ts --variant v || echo failed; tsx eval/other.ts', ['new-entry.ts', 'other.ts']],
+    ['echo ok # tsx eval/not-entry.ts', []],
+    ['echo ok # tsx eval/not-entry.ts\ntsx eval/real.ts', ['real.ts']],
+    ["printf '%s' '# tsx eval/not-entry.ts' && tsx eval/real.ts", ['real.ts']],
     ['tsx product/launch.ts eval/not-an-entry.ts', []],
     ['tsc --noEmit eval/not-an-entry.ts', []],
   ])('静态提取公开入口：%s', (command, expected) => {
@@ -141,12 +157,39 @@ describe('M3 + DSH 评测证据报告', () => {
     'tsx "eval/$ENTRY.ts"',
     '$RUNNER eval/real.ts',
     "sh -c 'tsx eval/real.ts'",
+    "/bin/sh -c 'tsx eval/real.ts'",
+    "./bash -c 'tsx eval/real.ts'",
+    "/usr/bin/env sh -c 'tsx eval/real.ts'",
     'pnpm --silent exec tsx eval/real.ts',
+    'runner eval/real.ts',
+    'command runner eval/real.ts',
+    'pnpm test eval/real.ts',
+    'tsx .\\eval\\real.ts',
+    'tsx ..\\eval\\real.ts',
+    'tsx\u00a0eval/real.ts',
     'tsx eval/real.ts > result.txt',
     'tsx eval/real.ts < input.txt',
     'echo ok | tsx eval/real.ts',
   ])('无法安全静态解析时 fail closed：%s', command => {
     expect(() => extractEvaluationEntrypoints(command)).toThrow()
+  })
+
+  it.each([
+    'command tsx eval/new-safe.ts',
+    'time tsx eval/new-safe.ts',
+    'runner eval/new-safe.ts',
+    "sh -c 'tsx eval/new-safe.ts'",
+    "/usr/bin/env /bin/sh -c 'tsx eval/new-safe.ts'",
+    'tsx .\\eval\\new-safe.ts',
+    'tsx\u00a0eval/new-safe.ts',
+  ])('可疑 script 注入 package scripts 时 registry 不会伪通过：%s', injected => {
+    const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
+    expect(registryMatches({ ...scripts, injected })).toBe(false)
+  })
+
+  it('package script 的 POSIX 注释不会制造虚假入口', () => {
+    const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
+    expect(registryMatches({ ...scripts, comment: 'echo ok # tsx eval/not-an-entry.ts' })).toBe(true)
   })
 
   it('内部非公开 runner 显式声明全部 commitment 归属', () => {

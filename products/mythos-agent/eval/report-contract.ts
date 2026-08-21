@@ -52,6 +52,11 @@ export const internalEvaluationModules: Readonly<Record<string, readonly Evaluat
 
 type ShellToken = { kind: 'boundary' | 'word'; value: string }
 
+function isWindowsEvaluationEscape(prefix: string, suffix: string): boolean {
+  return /^eval\\.+\.ts(?:$|[?# ])/iu.test(suffix)
+    || (/(?:^|[\\/:.])eval$/iu.test(prefix) && /^.+\.ts(?:$|[?# ])/iu.test(suffix))
+}
+
 function shellTokens(command: string): ShellToken[] {
   const tokens: ShellToken[] = []
   let token = ''
@@ -94,6 +99,7 @@ function shellTokens(command: string): ShellToken[] {
     if (character === '\\') {
       const next = command[index + 1]
       if (next === undefined) throw new Error('package script shell 解析失败')
+      if (isWindowsEvaluationEscape(token, command.slice(index + 1))) throw new Error('Windows eval 路径语法不受支持')
       started = true
       if (next !== '\n') token += next
       index += 1
@@ -107,15 +113,22 @@ function shellTokens(command: string): ShellToken[] {
     if (character === '`' || (character === '$' && command[index + 1] === '(')) {
       throw new Error('package script 禁止命令替换')
     }
-    if (character === '\n') {
-      flush()
-      tokens.push({ kind: 'boundary', value: ';' })
+    if (character === '#'
+      && !started) {
+      while (index + 1 < command.length && command[index + 1] !== '\n' && command[index + 1] !== '\r') index += 1
       continue
     }
-    if (/\s/u.test(character)) {
+    if (character === '\n' || character === '\r') {
+      flush()
+      if (tokens.at(-1)?.kind === 'word') tokens.push({ kind: 'boundary', value: ';' })
+      if (character === '\r' && command[index + 1] === '\n') index += 1
+      continue
+    }
+    if (character === ' ' || character === '\t') {
       flush()
       continue
     }
+    if (/\p{White_Space}/u.test(character)) throw new Error('package script 包含非 ASCII shell 空白')
     if (character === ';' || ((character === '&' || character === '|') && command[index + 1] === character)) {
       flush()
       const boundary = character === ';' ? character : `${character}${character}`
@@ -182,22 +195,54 @@ function consumeEnv(words: readonly string[], start: number): number {
   throw new Error('env wrapper 缺少 executable')
 }
 
+function consumeCommandWrapper(words: readonly string[], start: number): number {
+  let index = start
+  while (words[index] === '-p') index += 1
+  if (words[index] === '--') index += 1
+  if (words[index] === undefined || words[index]!.startsWith('-')) throw new Error('command wrapper 无法静态解析')
+  return index
+}
+
+function consumeTimeWrapper(words: readonly string[], start: number): number {
+  let index = start
+  while (words[index] === '-p') index += 1
+  if (words[index] === '--') index += 1
+  while (isAssignment(words[index] ?? '')) index += 1
+  if (words[index] === undefined || words[index]!.startsWith('-')) throw new Error('time wrapper 无法静态解析')
+  return index
+}
+
+function executableName(value: string): string {
+  return value.replaceAll('\\', '/').split('/').at(-1)!.replace(/\.exe$/iu, '').toLowerCase()
+}
+
+function mayReferenceEvaluationPath(value: string): boolean {
+  const normalized = value.replaceAll('\\', '/')
+  return /(?:^|\/)eval\/.+\.ts(?:$|[?#])/iu.test(normalized)
+}
+
 function executableIndex(words: readonly string[]): number | null {
   let index = 0
   while (isAssignment(words[index] ?? '')) index += 1
   if (words[index] === undefined) return null
-  if (words[index] === 'env') index = consumeEnv(words, index + 1)
-  if (words[index] === 'pnpm') {
+  for (;;) {
+    const wrapper = executableName(words[index]!)
+    if (wrapper === 'env') index = consumeEnv(words, index + 1)
+    else if (wrapper === 'command') index = consumeCommandWrapper(words, index + 1)
+    else if (wrapper === 'time') index = consumeTimeWrapper(words, index + 1)
+    else break
+  }
+  if (executableName(words[index]!) === 'pnpm') {
     if (words[index + 1] !== 'exec') {
       if (words[index + 1]?.startsWith('-') || words.slice(index + 1).some(value => value === 'tsx' || value.endsWith('/tsx'))) {
         throw new Error('pnpm wrapper 无法静态解析')
       }
-      return null
+      return index
     }
     index += 2
     if (words[index] === '--') index += 1
     if (words[index] === undefined || words[index]!.startsWith('-')) throw new Error('pnpm exec wrapper 无法静态解析')
-  } else if (words[index] === 'npx') {
+  } else if (executableName(words[index]!) === 'npx') {
     index += 1
     while (words[index]?.startsWith('-')) {
       const option = words[index]!
@@ -218,10 +263,15 @@ function tsxEntrypoint(words: readonly string[]): string | null {
   if (executable === null) return null
   const value = words[executable]!
   if (value.includes('$')) throw new Error('executable 无法静态解析')
-  if (value === 'sh' || value === 'bash' || value === 'dash' || value === 'zsh' || value === 'eval') {
+  const name = executableName(value)
+  if (name === 'sh' || name === 'bash' || name === 'dash' || name === 'zsh' || name === 'ksh' || name === 'fish' || name === 'eval') {
     throw new Error('package script 禁止动态 shell wrapper')
   }
-  if (value !== 'tsx' && !value.endsWith('/tsx')) return null
+  if (name !== 'tsx') {
+    if (name === 'echo' || name === 'printf' || name === 'tsc') return null
+    if (words.some(mayReferenceEvaluationPath)) throw new Error('simple command 的 eval 路径执行语义不明确')
+    return null
+  }
   let index = executable + 1
   while (words[index]?.startsWith('-')) {
     const option = words[index]!
@@ -248,7 +298,7 @@ function tsxEntrypoint(words: readonly string[]): string | null {
   if (script === undefined) throw new Error('tsx 缺少 script')
   if (script.includes('$') || script.includes('*') || script.includes('?')) throw new Error('tsx script 无法静态解析')
   const match = /^(?:\.\/)?eval\/([a-zA-Z0-9][a-zA-Z0-9._-]*\.ts)$/u.exec(script)
-  if ((script.startsWith('eval/') || script.startsWith('./eval/')) && !match) throw new Error('eval 入口路径无效')
+  if (mayReferenceEvaluationPath(script) && !match) throw new Error('eval 入口路径无效')
   return match?.[1] ?? null
 }
 
