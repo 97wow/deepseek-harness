@@ -143,6 +143,13 @@ describe('M3 + DSH 评测证据报告', () => {
     ['echo ok # tsx eval/not-entry.ts', []],
     ['echo ok # tsx eval/not-entry.ts\ntsx eval/real.ts', ['real.ts']],
     ["printf '%s' '# tsx eval/not-entry.ts' && tsx eval/real.ts", ['real.ts']],
+    ['echo ok \\\n# ignored ; tsx eval/run.ts', []],
+    ['echo ok \\\n   # ignored ; tsx eval/run.ts', []],
+    ['echo ok \\\ntsx eval/run.ts', []],
+    ['echo ok && \\\ntsx eval/run.ts', ['run.ts']],
+    ['tsx eval/run-\\\ncomprehensive.ts', ['run-comprehensive.ts']],
+    ['tsx "eval/run-\\\ncomprehensive.ts"', ['run-comprehensive.ts']],
+    ['tsx \\\n\\\neval/run.ts', ['run.ts']],
     ['tsx product/launch.ts eval/not-an-entry.ts', []],
     ['tsc --noEmit eval/not-an-entry.ts', []],
   ])('静态提取公开入口：%s', (command, expected) => {
@@ -167,6 +174,8 @@ describe('M3 + DSH 评测证据报告', () => {
     'tsx .\\eval\\real.ts',
     'tsx ..\\eval\\real.ts',
     'tsx\u00a0eval/real.ts',
+    "tsx 'eval/run-\\\ncomprehensive.ts'",
+    'tsx eval/run.ts\\',
     'tsx eval/real.ts > result.txt',
     'tsx eval/real.ts < input.txt',
     'echo ok | tsx eval/real.ts',
@@ -190,6 +199,12 @@ describe('M3 + DSH 评测证据报告', () => {
   it('package script 的 POSIX 注释不会制造虚假入口', () => {
     const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
     expect(registryMatches({ ...scripts, comment: 'echo ok # tsx eval/not-an-entry.ts' })).toBe(true)
+  })
+
+  it('反斜线续行后的注释替换已注册 script 时 registry 不再伪报 10/10', () => {
+    const scripts = Object.fromEntries(Object.keys(evaluationEntrypoints).map(filename => [filename, `tsx eval/${filename}`]))
+    scripts['run.ts'] = 'echo ok \\\n# ignored ; tsx eval/run.ts'
+    expect(registryMatches(scripts)).toBe(false)
   })
 
   it('内部非公开 runner 显式声明全部 commitment 归属', () => {

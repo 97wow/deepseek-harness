@@ -57,6 +57,12 @@ function isWindowsEvaluationEscape(prefix: string, suffix: string): boolean {
     || (/(?:^|[\\/:.])eval$/iu.test(prefix) && /^.+\.ts(?:$|[?# ])/iu.test(suffix))
 }
 
+function escapedNewlineLength(command: string, backslashIndex: number): number {
+  if (command[backslashIndex + 1] === '\n') return 1
+  if (command[backslashIndex + 1] === '\r' && command[backslashIndex + 2] === '\n') return 2
+  return 0
+}
+
 function shellTokens(command: string): ShellToken[] {
   const tokens: ShellToken[] = []
   let token = ''
@@ -80,13 +86,14 @@ function shellTokens(command: string): ShellToken[] {
       } else if (character === '\\') {
         const next = command[index + 1]
         if (next === undefined) throw new Error('package script shell 解析失败')
-        if (next === '$' || next === '`' || next === '"' || next === '\\') {
+        const continuationLength = escapedNewlineLength(command, index)
+        if (continuationLength > 0) {
+          index += continuationLength
+        } else if (next === '$' || next === '`' || next === '"' || next === '\\') {
           token += next
           index += 1
-        } else if (next !== '\n') {
-          token += character
         } else {
-          index += 1
+          token += character
         }
       } else {
         if (character === '`' || (character === '$' && command[index + 1] === '(')) {
@@ -99,9 +106,14 @@ function shellTokens(command: string): ShellToken[] {
     if (character === '\\') {
       const next = command[index + 1]
       if (next === undefined) throw new Error('package script shell 解析失败')
+      const continuationLength = escapedNewlineLength(command, index)
+      if (continuationLength > 0) {
+        index += continuationLength
+        continue
+      }
       if (isWindowsEvaluationEscape(token, command.slice(index + 1))) throw new Error('Windows eval 路径语法不受支持')
       started = true
-      if (next !== '\n') token += next
+      token += next
       index += 1
       continue
     }
@@ -218,7 +230,7 @@ function executableName(value: string): string {
 
 function mayReferenceEvaluationPath(value: string): boolean {
   const normalized = value.replaceAll('\\', '/')
-  return /(?:^|\/)eval\/.+\.ts(?:$|[?#])/iu.test(normalized)
+  return /(?:^|\/)eval\/[\s\S]+\.ts(?:$|[?#])/iu.test(normalized)
 }
 
 function executableIndex(words: readonly string[]): number | null {
