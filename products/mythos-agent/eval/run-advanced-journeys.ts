@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { advancedJourneyCases } from './advanced-journeys.js'
 import { advancedJourneyConfigurationSha256 } from './advanced-journey-configuration.js'
 import { readCompressedSessionMetrics } from './session-metrics.js'
-import { buildEvaluationReport } from './report-contract.js'
+import { buildAttestedEvaluationReport } from './report-contract.js'
 import { readObservedProviderEvidence } from './runtime-evidence.js'
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -130,7 +130,7 @@ const draft = {
 }
 const advancedOverlays = [relative(productRoot, runtimeEvidenceOverlay), 'eval/overlays/journey.yml',
   ...new Set(chosenCases.map(testCase => `eval/overlays/journey-${testCase.overlay}.yml`))]
-const report = await buildEvaluationReport({
+const { report } = await buildAttestedEvaluationReport({
   cases,
   config: { caseIds: chosenCases.map(testCase => testCase.id), endpoint: process.env.DEEPSEEK_BASE_URL,
     profile: 'mythos', repetition: process.env.MYTHOS_EVAL_REPLAY_ITERATION ?? null,

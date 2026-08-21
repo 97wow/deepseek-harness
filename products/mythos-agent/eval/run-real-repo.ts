@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { realRepoCases, installFutureTest } from './real-repo-cases.js'
 import { realRepoConfigurationSha256 } from './real-repo-configuration.js'
 import { readCompressedSessionMetrics } from './session-metrics.js'
-import { buildEvaluationReport } from './report-contract.js'
+import { buildAttestedEvaluationReport } from './report-contract.js'
 import { readObservedProviderEvidence, type ProviderResponseObservation } from './runtime-evidence.js'
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -145,7 +145,7 @@ const draft = { baseline: { configurationSha256: await realRepoConfigurationSha2
   variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
   cases, completedAt: new Date().toISOString(), model: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash', passed: cases.every(item => item.passed),
   profile: 'mythos', reportVersion: 1, runId: randomUUID(), startedAt }
-const report = await buildEvaluationReport({
+const { report } = await buildAttestedEvaluationReport({
   cases,
   config: { caseIds: chosen.map(testCase => testCase.id), endpoint: process.env.DEEPSEEK_BASE_URL,
     profile: 'mythos', suite: 'real-repository', timeoutMs, variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },

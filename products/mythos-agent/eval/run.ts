@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { selectEvaluationSuite, type EvaluationCase, type VerificationResult } from './cases.js'
 import { parseEvaluationModel, parseEvaluationTimeoutMs, parseReplayMetadata } from './options.js'
-import { buildEvaluationReport } from './report-contract.js'
+import { buildAttestedEvaluationReport } from './report-contract.js'
 import { readObservedProviderEvidence, type CaseRuntimeEvidence, type ProviderResponseObservation } from './runtime-evidence.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
 
@@ -321,7 +321,7 @@ async function main(): Promise<void> {
     startedAt,
     totals: buildTotals(results),
   }
-  const report = await buildEvaluationReport({
+  const { report } = await buildAttestedEvaluationReport({
     cases: results,
     config: { caseIds: selectedCases.map(testCase => testCase.id), endpoint: process.env.DEEPSEEK_BASE_URL,
       profile: 'mythos', replay: replay ?? null, suite: evaluationSuite, timeoutMs: evaluationTimeoutMs,

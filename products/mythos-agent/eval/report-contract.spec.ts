@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  buildAttestedEvaluationReport,
   buildEvaluationReport,
   classifyFailure,
   endpointCommitment,
@@ -16,6 +17,7 @@ import {
   validateBilling,
   validateTokens,
   type EvaluationEntry,
+  type EvaluationReportAttestation,
   type ReportCase,
 } from './report-contract.js'
 import { evaluationEntryRegistry } from './entry-registry.js'
@@ -202,7 +204,13 @@ describe('M3 + DSH 评测证据报告', () => {
     process.env.MYTHOS_EVAL_INVOCATION_JSON = JSON.stringify(['standard'])
     try {
       const productRoot = join(artifactRoot, 'product')
-      const report = await reportInput(productRoot, artifactRoot, [completeCase()])
+      const { attestation, report } = await buildAttestedEvaluationReport({
+        cases: [completeCase()],
+        config: { endpoint: 'https://example.invalid/v1', timeoutMs: 10 },
+        draft: { baseline: { suite: 'release', timeoutMs: 10, variant: 'default' }, runId: 'run-attested' },
+        entry: 'standard', entryId: 'standard', productRoot, repoRoot: artifactRoot,
+        requestedModel: 'requested-model', requestedProvider: 'requested-provider',
+      })
       const implementation = report.implementation as Record<string, unknown>
       const runtime = implementation.runtime as Record<string, unknown>
       const snapshot = implementation.snapshot as Record<string, unknown>
@@ -212,6 +220,31 @@ describe('M3 + DSH 评测证据报告', () => {
       expect(snapshot).toMatchObject({ gitCommit: artifact.source.gitCommit, gitTree: artifact.source.gitTree })
       expect(report.source).toMatchObject({ dsh: { declaredCommit: 'dsh-commit', declaredVersion: '0.1.0-rc.8' },
         gitHead: artifact.source.gitCommit })
+      expect(report).toMatchObject({ acceptance: { passed: true }, passed: true })
+
+      const serialized = JSON.parse(JSON.stringify(report)) as Record<string, unknown>
+      const untrusted = parseEvaluationReport(serialized)
+      expect(untrusted).toMatchObject({
+        acceptance: { failures: expect.arrayContaining(['trusted_attestation_missing']), passed: false }, passed: false,
+      })
+      expect(parseEvaluationReport(JSON.parse(JSON.stringify(untrusted)))).toMatchObject({ passed: false })
+      expect(parseEvaluationReport(serialized, JSON.parse(JSON.stringify(attestation)) as EvaluationReportAttestation))
+        .toMatchObject({ acceptance: { failures: expect.arrayContaining(['trusted_attestation_invalid']), passed: false }, passed: false })
+      expect(parseEvaluationReport(serialized, attestation)).toMatchObject({ acceptance: { passed: true }, passed: true })
+
+      const mutations: Record<string, unknown>[] = [
+        { ...serialized, runId: 'run-tampered' },
+        { ...serialized, baseline: { ...(serialized.baseline as object), suite: 'tampered-digest' } },
+        { ...serialized, implementation: { ...implementation,
+          runtime: { ...(implementation.runtime as object), artifactSha256: 'tampered-artifact' } } },
+        { ...serialized, implementation: { ...implementation,
+          snapshot: { ...(implementation.snapshot as object), sha256: 'tampered-source' } } },
+      ]
+      for (const mutation of mutations) {
+        expect(parseEvaluationReport(mutation, attestation)).toMatchObject({
+          acceptance: { failures: expect.arrayContaining(['trusted_attestation_invalid']), passed: false }, passed: false,
+        })
+      }
     } finally {
       if (previous.manifest === undefined) delete process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST
       else process.env.MYTHOS_EVAL_ARTIFACT_MANIFEST = previous.manifest
@@ -361,7 +394,8 @@ describe('M3 + DSH 评测证据报告', () => {
     testCase.tool = { args: leaks[3], result: leaks[4] }
     const report = await buildEvaluationReport({
       cases: [testCase], config: { endpoint: `https://example.invalid?v=${leaks[6]}` },
-      draft: { headers: { Authorization: leaks[5] }, arbitrary: { nested: leaks[1] }, endpoint: `https://x.invalid?${leaks[6]}`, serverModel: leaks[7] },
+      draft: { headers: { Authorization: leaks[5] }, arbitrary: { nested: leaks[1] }, endpoint: `https://x.invalid?${leaks[6]}`,
+        runId: 'allowlist-run', serverModel: leaks[7] },
       entry: 'standard', productRoot, repoRoot, requestedModel: 'm', requestedProvider: 'p',
     })
     const serialized = JSON.stringify(report)
@@ -369,7 +403,9 @@ describe('M3 + DSH 评测证据报告', () => {
   })
 
   it('v1 可解析但 v2 schema 必须显式合法', () => {
-    expect(parseEvaluationReport({ cases: [], reportVersion: 1 }).reportVersion).toBe(1)
+    expect(parseEvaluationReport({ cases: [], passed: true, reportVersion: 1 })).toMatchObject({
+      acceptance: { failures: ['trusted_attestation_missing'], passed: false }, passed: false, reportVersion: 1,
+    })
     expect(parseEvaluationReport({
       acceptance: { failures: ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete', 'zero_cases'], passed: false },
       cases: [], implementation: { entry: 'standard', files: [], runtime: { endpoint: { sha256: 'endpoint' }, parametersSha256: 'parameters' }, sha256: 'hash' },

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { journeyCases } from './journeys.js'
 import { journeyConfigurationSha256 } from './journey-configuration.js'
 import { readCompressedSessionMetrics } from './session-metrics.js'
-import { buildEvaluationReport } from './report-contract.js'
+import { buildAttestedEvaluationReport } from './report-contract.js'
 import { readObservedProviderEvidence } from './runtime-evidence.js'
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -129,7 +129,7 @@ const draft = {
   runId: randomUUID(),
   startedAt,
 }
-const report = await buildEvaluationReport({
+const { report } = await buildAttestedEvaluationReport({
   cases,
   config: { caseIds: journeyCases.map(testCase => testCase.id), endpoint: process.env.DEEPSEEK_BASE_URL,
     profile: 'mythos', repetition: process.env.MYTHOS_EVAL_REPLAY_ITERATION ?? null,

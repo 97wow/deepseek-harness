@@ -33,6 +33,23 @@ const supportedCurrencies = new Set(['USD'])
 
 export type FailureCategory = 'model_failure' | 'harness_failure' | 'infrastructure_failure'
 
+export interface EvaluationReportAttestation {
+  readonly artifactSha256: string | null
+  readonly observationSha256: string
+  readonly reportSha256: string
+  readonly runId: string
+  readonly sourceCommitmentSha256: string
+  readonly sourceGitCommit: string
+  readonly sourceGitTree: string
+}
+
+export interface AttestedEvaluationReport {
+  attestation: EvaluationReportAttestation
+  report: Record<string, unknown>
+}
+
+const issuedReportAttestations = new WeakSet<object>()
+
 export interface ReportCase {
   /** Legacy/untrusted labels are retained only so old callers fail closed. */
   agentIdleObserved?: boolean
@@ -427,7 +444,7 @@ function projectDraft(draft: object): Record<string, unknown> {
   }
 }
 
-export async function buildEvaluationReport(input: {
+export interface EvaluationReportInput {
   cases: readonly ReportCase[]
   config: Readonly<Record<string, unknown>>
   draft: object
@@ -438,7 +455,9 @@ export async function buildEvaluationReport(input: {
   repoRoot: string
   requestedModel: string
   requestedProvider: string
-}): Promise<Record<string, unknown>> {
+}
+
+async function projectEvaluationReport(input: EvaluationReportInput): Promise<Record<string, unknown>> {
   const manifest = JSON.parse(await readFile(resolve(input.productRoot, 'package.json'), 'utf8')) as ProductManifest
   const [source, implementation] = await Promise.all([
     sourceEvidence(input.repoRoot),
@@ -464,7 +483,67 @@ export async function buildEvaluationReport(input: {
   }
 }
 
-export function parseEvaluationReport(value: unknown): Record<string, unknown> {
+function reportObservationSha256(report: Record<string, unknown>): string {
+  return createHash('sha256').update(canonical({
+    cases: report.cases,
+    serverIdentity: record(record(report.modelIdentity).server),
+  })).digest('hex')
+}
+
+function issueReportAttestation(report: Record<string, unknown>): EvaluationReportAttestation {
+  const implementation = record(report.implementation)
+  const runtime = record(implementation.runtime)
+  const snapshot = record(implementation.snapshot)
+  const attestation = Object.freeze({
+    artifactSha256: safeString(runtime.artifactSha256),
+    observationSha256: reportObservationSha256(report),
+    reportSha256: createHash('sha256').update(canonical(report)).digest('hex'),
+    runId: safeString(report.runId) ?? '',
+    sourceCommitmentSha256: safeString(snapshot.sha256) ?? '',
+    sourceGitCommit: safeString(snapshot.gitCommit) ?? '',
+    sourceGitTree: safeString(snapshot.gitTree) ?? '',
+  })
+  issuedReportAttestations.add(attestation)
+  return attestation
+}
+
+function attestationMatches(report: Record<string, unknown>, attestation: EvaluationReportAttestation | undefined): boolean {
+  if (attestation === undefined || !issuedReportAttestations.has(attestation)) return false
+  const implementation = record(report.implementation)
+  const runtime = record(implementation.runtime)
+  const snapshot = record(implementation.snapshot)
+  return attestation.reportSha256 === createHash('sha256').update(canonical(report)).digest('hex')
+    && attestation.runId === report.runId
+    && attestation.artifactSha256 === (safeString(runtime.artifactSha256) ?? null)
+    && attestation.sourceCommitmentSha256 === snapshot.sha256
+    && attestation.sourceGitCommit === snapshot.gitCommit
+    && attestation.sourceGitTree === snapshot.gitTree
+    && attestation.observationSha256 === reportObservationSha256(report)
+}
+
+function untrustedReport(report: Record<string, unknown>, reason: 'trusted_attestation_invalid' | 'trusted_attestation_missing'):
+Record<string, unknown> {
+  const acceptance = record(report.acceptance)
+  const declaredFailures = Array.isArray(acceptance.failures)
+    ? acceptance.failures.filter((failure): failure is string => typeof failure === 'string') : []
+  return { ...report, acceptance: { failures: [...new Set([...declaredFailures, reason])], passed: false }, passed: false }
+}
+
+export async function buildAttestedEvaluationReport(input: EvaluationReportInput): Promise<AttestedEvaluationReport> {
+  const report = await projectEvaluationReport(input)
+  const attestation = issueReportAttestation(report)
+  return { attestation, report: parseEvaluationReport(report, attestation) }
+}
+
+/** Compatibility builder: the report is readable, but formal acceptance requires the separate attestation API. */
+export async function buildEvaluationReport(input: EvaluationReportInput): Promise<Record<string, unknown>> {
+  return parseEvaluationReport(await projectEvaluationReport(input))
+}
+
+export function parseEvaluationReport(
+  value: unknown,
+  attestation?: EvaluationReportAttestation,
+): Record<string, unknown> {
   const report = record(value)
   if (report.reportVersion !== 1 && report.reportVersion !== 2) throw new Error('不支持的评测报告版本')
   if (!Array.isArray(report.cases)) throw new Error('评测报告缺少 cases')
@@ -526,10 +605,18 @@ export function parseEvaluationReport(value: unknown): Record<string, unknown> {
     }
     const expectedFailures = authoritativeReportFailures(report.cases.map(record), source, implementation, serverIdentity)
     const expectedPassed = expectedFailures.length === 0
-    if (acceptance.passed !== expectedPassed || report.passed !== expectedPassed
-      || canonical(acceptance.failures) !== canonical(expectedFailures)) throw new Error('v2 评测报告 acceptance 派生语义不一致')
+    const declaredFailures = acceptance.failures.filter((failure): failure is string => typeof failure === 'string')
+    const attestationFailures = declaredFailures.filter(failure => failure === 'trusted_attestation_missing'
+      || failure === 'trusted_attestation_invalid')
+    const baseFailures = declaredFailures.filter(failure => failure !== 'trusted_attestation_missing'
+      && failure !== 'trusted_attestation_invalid')
+    const declaredPassed = attestationFailures.length === 0 ? expectedPassed : false
+    if (declaredFailures.length !== acceptance.failures.length || attestationFailures.length > 1
+      || acceptance.passed !== declaredPassed || report.passed !== declaredPassed
+      || canonical(baseFailures) !== canonical(expectedFailures)) throw new Error('v2 评测报告 acceptance 派生语义不一致')
   }
-  return report
+  if (attestationMatches(report, attestation)) return report
+  return untrustedReport(report, attestation === undefined ? 'trusted_attestation_missing' : 'trusted_attestation_invalid')
 }
 
 function entriesInclude(value: unknown): value is EvaluationEntry {
