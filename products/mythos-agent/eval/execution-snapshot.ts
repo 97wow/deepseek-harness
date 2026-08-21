@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
+import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { evaluationRuntimeSourceFiles } from './entry-registry.js'
 
@@ -241,6 +242,115 @@ async function defaultHooks(): Promise<ExecutionArtifactHooks> {
   }
 }
 
+function replaceBytes(contents: Buffer, needle: Buffer, replacement: Buffer): Buffer<ArrayBuffer> {
+  if (needle.length === 0) return Buffer.from(contents)
+  const chunks: Buffer[] = []
+  let cursor = 0
+  while (cursor <= contents.length - needle.length) {
+    const index = contents.indexOf(needle, cursor)
+    if (index < 0) break
+    chunks.push(contents.subarray(cursor, index), replacement)
+    cursor = index + needle.length
+  }
+  if (cursor === 0) return Buffer.from(contents)
+  chunks.push(contents.subarray(cursor))
+  return Buffer.from(Buffer.concat(chunks))
+}
+
+function clientDebugPath(path: string): boolean {
+  return /^packages\/(?:client\/[^/]+|extensions\/ui-cordis|session-query\/session-log-export)\/lib\/client\.js$/u.test(path)
+}
+
+function allOccurrencesAreCssRegions(contents: Buffer, root: Buffer): boolean {
+  const markers = ['//#region \\0dsh-css:', '//#region \\0dsh-inline-css:'].map(marker => Buffer.from(marker))
+  let cursor = 0
+  let found = false
+  while (cursor <= contents.length - root.length) {
+    const index = contents.indexOf(root, cursor)
+    if (index < 0) break
+    found = true
+    if (!markers.some(marker => index >= marker.length
+      && contents.subarray(index - marker.length, index).equals(marker))) return false
+    cursor = index + root.length
+  }
+  return found
+}
+
+async function normalizeBuildRoots(
+  root: string,
+  sourceCommitment: ExecutionSnapshotCommitment,
+): Promise<void> {
+  const canonicalRoot = await realpath(root)
+  const storeOutput = (await run(root, 'pnpm', ['store', 'path'])).trim()
+  const storeRoot = storeOutput === '' ? null : await realpath(storeOutput)
+  const rootForms = [...new Set([resolve(root), canonicalRoot])]
+  const forbidden = [...rootForms, ...(storeRoot === null ? [] : [storeRoot])].map(path => Buffer.from(path))
+  const normalizationRoots = [canonicalRoot, ...(storeRoot === null ? [] : [storeRoot])].map(path => Buffer.from(path))
+  const stableDebugRoot = Buffer.from(`mythos-source://git/${sourceCommitment.gitCommit}`)
+
+  async function visit(directory: string): Promise<void> {
+    for (const name of await readdir(directory)) {
+      const absolute = resolve(directory, name)
+      const information = await lstat(absolute)
+      const path = relative(canonicalRoot, absolute).split(sep).join('/')
+      if (information.isDirectory()) { await visit(absolute); continue }
+      if (!information.isFile() || information.isSymbolicLink()) continue
+      let contents = await readFile(absolute)
+      const matchingRoots = normalizationRoots.filter(candidate => contents.includes(candidate))
+      if (matchingRoots.length === 0) continue
+      if (path === 'node_modules/.pnpm-workspace-state-v1.json' || path === 'node_modules/.modules.yaml') {
+        await rm(absolute)
+        continue
+      }
+      if (path.split('/').includes('.bin')) {
+        if (!contents.subarray(0, 10).equals(Buffer.from('#!/bin/sh\n')) || !contents.includes(Buffer.from('basedir='))) {
+          throw new Error(`pnpm shim 无法确定性重写：${path}`)
+        }
+        const relativeRoot = relative(dirname(absolute), canonicalRoot).split(sep).join('/') || '.'
+        const replacement = Buffer.from(`$basedir/${relativeRoot}`)
+        for (const candidate of matchingRoots) contents = replaceBytes(contents, candidate, replacement)
+        await writeFile(absolute, Uint8Array.from(contents), { mode: information.mode & 0o777 })
+        continue
+      }
+      if (clientDebugPath(path) && matchingRoots.every(candidate => allOccurrencesAreCssRegions(contents, candidate))) {
+        for (const candidate of matchingRoots) contents = replaceBytes(contents, candidate, stableDebugRoot)
+        await writeFile(absolute, Uint8Array.from(contents), { mode: information.mode & 0o777 })
+        continue
+      }
+      throw new Error(`执行产物包含未分类的构建根泄漏：${path}`)
+    }
+  }
+  await visit(canonicalRoot)
+  // Preserve the build-environment evidence while rebinding it to normalized client bytes.
+  const buildRecordPath = resolve(canonicalRoot, '.dsh-build/client-build-environment.json')
+  try {
+    await lstat(buildRecordPath)
+    const buildEnvironmentModule = await import(pathToFileURL(
+      resolve(canonicalRoot, 'scripts/client-build-environment.ts'),
+    ).href) as { refreshClientBuildRecordArtifactDigest(root: string): unknown }
+    buildEnvironmentModule.refreshClientBuildRecordArtifactDigest(canonicalRoot)
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+  }
+  await assertNoAbsolutePathLeak(canonicalRoot, forbidden)
+}
+
+async function assertNoAbsolutePathLeak(root: string, forbidden: readonly Buffer[]): Promise<void> {
+  async function visit(directory: string): Promise<void> {
+    for (const name of await readdir(directory)) {
+      const absolute = resolve(directory, name)
+      const information = await lstat(absolute)
+      if (information.isDirectory()) { await visit(absolute); continue }
+      if (!information.isFile() || information.isSymbolicLink()) continue
+      const contents = await readFile(absolute)
+      if (forbidden.some(candidate => candidate.length > 0 && contents.includes(candidate))) {
+        throw new Error(`执行产物仍包含绝对路径泄漏：${relative(root, absolute).split(sep).join('/')}`)
+      }
+    }
+  }
+  await visit(root)
+}
+
 async function buildCommittedTree(
   repoRoot: string,
   destination: string,
@@ -256,6 +366,7 @@ async function buildCommittedTree(
     await verifyExecutionSnapshot(source, sourceCommitment, true)
     await hooks.install(source)
     await hooks.build(source)
+    await normalizeBuildRoots(source, sourceCommitment)
     await cp(source, destination, {
       recursive: true, verbatimSymlinks: true, filter: path => path !== join(source, '.git'),
     })
@@ -291,12 +402,15 @@ export async function materializeExecutionArtifact(
   if ((await readdir(destination)).length !== 0) throw new Error('执行产物目录必须为空')
   const operations = hooks ?? await defaultHooks()
   await buildCommittedTree(repoRoot, destination, source, operations)
+  const canonicalDestination = await realpath(destination)
+  await assertNoAbsolutePathLeak(canonicalDestination, [Buffer.from(resolve(destination)), Buffer.from(canonicalDestination)])
   await ensureMutableOutputRoots(destination)
   const pnpmVersion = (await run(destination, 'pnpm', ['--version'])).trim()
   await lockExecutionArtifact(destination)
   const files = await artifactInventory(destination)
   const build = { commands: ['pnpm install --offline --frozen-lockfile --ignore-scripts', 'pnpm build',
-    `pnpm --dir products/mythos-agent ${evaluationRuntimeCompilerArguments.join(' ')}`],
+    `pnpm --dir products/mythos-agent ${evaluationRuntimeCompilerArguments.join(' ')}`,
+    'internal:normalize-pnpm-shims-and-generated-debug-paths-v2'],
     nodeVersion: process.version, pnpmVersion }
   const identity = { build, files, mutableRoots, source }
   return { algorithm: 'execution-artifact-sha256-v1', ...identity,

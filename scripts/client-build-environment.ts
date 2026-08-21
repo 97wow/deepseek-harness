@@ -209,6 +209,13 @@ export function writeClientBuildRecord(
   return record
 }
 
+/** Refresh only the artifact digest after deterministic post-build normalization. */
+export function refreshClientBuildRecordArtifactDigest(root: string): ClientBuildRecord {
+  const path = resolve(root, CLIENT_BUILD_RECORD_PATH)
+  const existing = parseClientBuildRecord(JSON.parse(readFileSync(path, 'utf8')) as unknown)
+  return writeClientBuildRecord(root, existing.environment)
+}
+
 /**
  * Read a complete build record and prove it still describes the current artifacts.
  * @param root - repository root containing the record and generated artifacts.

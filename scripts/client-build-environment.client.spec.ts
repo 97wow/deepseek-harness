@@ -8,6 +8,7 @@ import {
   clientBuildEnvironmentDefines,
   clientBuildProcessEnvironment,
   readClientBuildRecord,
+  refreshClientBuildRecordArtifactDigest,
   repositoryCommitHash,
   resolveClientBuildEnvironment,
   writeClientBuildRecord,
@@ -160,6 +161,8 @@ describe('client build environment', () => {
 
     write(join(official, 'apps/web/dist/index.html'), '<main>changed</main>')
     expect(() => { readClientBuildRecord(official) }).toThrow(/artifacts differ/)
+    expect(refreshClientBuildRecordArtifactDigest(official).environment).toEqual(officialEnvironment)
+    expect(readClientBuildRecord(official).environment).toEqual(officialEnvironment)
   })
 
   it('keeps public client values out of workflow-wide environments', () => {

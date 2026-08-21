@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { access, chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -93,6 +93,23 @@ async function anchoredHookEnvironment(root: string, artifact: Awaited<ReturnTyp
   }
 }
 
+async function byteLeakCount(root: string, needles: readonly string[]): Promise<number> {
+  let count = 0
+  async function visit(directory: string): Promise<void> {
+    for (const name of await readdir(directory)) {
+      const absolute = join(directory, name)
+      const information = await lstat(absolute)
+      if (information.isDirectory()) await visit(absolute)
+      else if (information.isFile()) {
+        const contents = await readFile(absolute)
+        if (needles.some(needle => contents.includes(Buffer.from(needle)))) count += 1
+      }
+    }
+  }
+  await visit(root)
+  return count
+}
+
 describe('不可变执行快照', () => {
   it('绑定整个 tracked tree；工作树变化不影响已锁定提交，新提交改变 SHA', async () => {
     const root = await fixture()
@@ -150,6 +167,47 @@ describe('不可变执行快照', () => {
     expect(await readFile(join(destination, 'src/entry.ts'), 'utf8')).toBe('export const value = 1\n')
     expect(await assertSnapshotRuntimePath(verified, join(destination, 'lib/entry.js'))).toContain(destination)
     await expect(assertSnapshotRuntimePath(verified, join(root, 'src/entry.ts'))).rejects.toThrow('之外')
+  })
+
+  it('不同随机 source/artifact 根生成逐项相同且可运行的确定性产物', async () => {
+    const root = await fixture()
+    const source = await commitExecutionSnapshot(root)
+    const sourceRoots: string[] = []
+    const hooks = {
+      async install(path: string) {
+        const canonicalRoot = await realpath(path)
+        sourceRoots.push(canonicalRoot)
+        await mkdir(join(path, 'node_modules/.bin'), { recursive: true })
+        await writeFile(join(path, 'node_modules/tool.js'), "process.stdout.write('shim-ok')\n")
+        await writeFile(join(path, 'node_modules/.bin/tool'), `#!/bin/sh\nbasedir=$(dirname "$0")\nexport NODE_PATH="${canonicalRoot}/node_modules"\nexec node "$basedir/../tool.js" "$@"\n# cmd-shim-target=${canonicalRoot}/node_modules/tool.js\n`, { mode: 0o755 })
+        await writeFile(join(path, 'node_modules/.pnpm-workspace-state-v1.json'), JSON.stringify({ root: canonicalRoot }))
+        await writeFile(join(path, 'node_modules/.modules.yaml'), `storeDir: ${canonicalRoot}/store\nvirtualStoreDir: ${canonicalRoot}/node_modules/.pnpm\n`)
+      },
+      async build(path: string) {
+        const canonicalRoot = await realpath(path)
+        const output = join(path, 'packages/client/example/lib/client.js')
+        await mkdir(dirname(output), { recursive: true })
+        await writeFile(output, `//#region \\0dsh-css:${canonicalRoot}/packages/client/example/src/client.css.mjs\n//#region \\0dsh-inline-css:${canonicalRoot}/packages/client/example/src/inline.css.mjs\nexport {}\n`)
+      },
+    }
+    const firstRoot = await mkdtemp(join(tmpdir(), 'mythos-artifact-first-'))
+    const secondRoot = await mkdtemp(join(tmpdir(), 'mythos-artifact-second-'))
+    const first = await materializeExecutionArtifact(root, firstRoot, source, hooks)
+    const second = await materializeExecutionArtifact(root, secondRoot, source, hooks)
+    expect(sourceRoots).toHaveLength(2)
+    expect(new Set(sourceRoots).size).toBe(2)
+    expect(first.files).toEqual(second.files)
+    expect(first.sha256).toBe(second.sha256)
+    expect(first.files.some(file => file.path === 'node_modules/.modules.yaml')).toBe(false)
+    await expect(verifyExecutionArtifact(firstRoot, first)).resolves.toBeDefined()
+    await expect(verifyExecutionArtifact(secondRoot, second)).resolves.toBeDefined()
+    await expect(execFileAsync(join(firstRoot, 'node_modules/.bin/tool'), [], { encoding: 'utf8' }))
+      .resolves.toMatchObject({ stdout: 'shim-ok' })
+    await expect(execFileAsync(join(secondRoot, 'node_modules/.bin/tool'), [], { encoding: 'utf8' }))
+      .resolves.toMatchObject({ stdout: 'shim-ok' })
+    const forbidden = [...sourceRoots, await realpath(firstRoot), await realpath(secondRoot)]
+    expect(await byteLeakCount(firstRoot, forbidden)).toBe(0)
+    expect(await byteLeakCount(secondRoot, forbidden)).toBe(0)
   })
 
   it('manifest 不含正文且依赖文件修改后离线重验 fail closed', async () => {

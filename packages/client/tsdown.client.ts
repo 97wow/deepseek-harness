@@ -508,8 +508,11 @@ function clientConfig(id: string, entry: string): UserConfig {
         // The virtual id otherwise hides the physical stylesheet from Rolldown's watch graph.
         this.addWatchFile(fileId)
         const source = await readFile(fileId)
+        const deterministicFilename = relative(REPOSITORY_ROOT, fileId).split(sep).join('/')
         const { code, exports: cssExports } = transform({
-          filename: fileId,
+          // lightningcss includes filename in CSS Modules hashes. Keep the physical
+          // path for reads/watch, but never let a random checkout root affect bytes.
+          filename: deterministicFilename,
           code: source,
           cssModules: { pattern: '[hash]_[local]' },
           minify: true,
