@@ -2,6 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { parseSessionJsonl } from './session-metrics.js'
 
 describe('parseSessionJsonl', () => {
+  it('counts multi-turn resume and compaction boundaries', () => {
+    const metrics = parseSessionJsonl([
+      JSON.stringify({ type: 'turn/start', data: { turn: 1 } }),
+      JSON.stringify({ type: 'session/end-seed', data: {} }),
+      JSON.stringify({ type: 'turn/start', data: { turn: 2 } }),
+      JSON.stringify({ type: 'compaction/summary', data: {} }),
+      JSON.stringify({ type: 'user/message', data: { source: { kind: 'plugin', plugin: 'mythos-experience' } } }),
+      '',
+    ].join('\n'))
+    expect(metrics).toMatchObject({ compactionSummaries: 1, experienceRecoveries: 1, resumeBoundaries: 1, turns: 2 })
+  })
+
   it('只提取聚合指标并忽略内容和损坏行', () => {
     const jsonl = [
       JSON.stringify({ version: 1 }),
@@ -40,15 +52,19 @@ describe('parseSessionJsonl', () => {
 
     expect(parseSessionJsonl(jsonl)).toEqual({
       cacheReadTokens: 3,
+      compactionSummaries: 0,
       evidenceAfterMutation: true,
+      experienceRecoveries: 0,
       failedToolResults: 1,
       inputTokens: 100,
       mutationCalls: 1,
       outputTokens: 20,
+      resumeBoundaries: 0,
       steps: 1,
       toolCalls: { bash: 1, read: 1, write: 1 },
       toolResults: 1,
       turnReason: 'completed',
+      turns: 0,
     })
   })
 })

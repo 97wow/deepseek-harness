@@ -5,7 +5,9 @@ export interface GateCriteria {
   cohortPrefix: string
   maxDurationMsP95: number
   minEvidenceAfterMutationRate?: number
+  minResumeBoundariesMean?: number
   minSamples: number
+  minTurnsMean?: number
 }
 
 export interface GateResult {
@@ -33,6 +35,13 @@ export function evaluateReleaseGate(
     if (criteria.minEvidenceAfterMutationRate !== undefined
       && summary.evidenceAfterMutationRate < criteria.minEvidenceAfterMutationRate) {
       failures.push(`${caseId}: 修改后验证率 ${summary.evidenceAfterMutationRate}`)
+    }
+    if (criteria.minResumeBoundariesMean !== undefined
+      && summary.resumeBoundariesMean < criteria.minResumeBoundariesMean) {
+      failures.push(`${caseId}: 平均冷恢复边界 ${summary.resumeBoundariesMean}`)
+    }
+    if (criteria.minTurnsMean !== undefined && summary.turnsMean < criteria.minTurnsMean) {
+      failures.push(`${caseId}: 平均轮次 ${summary.turnsMean}`)
     }
     if (summary.durationMsP95 > criteria.maxDurationMsP95) {
       failures.push(`${caseId}: P95 ${summary.durationMsP95}ms 超过 ${criteria.maxDurationMsP95}ms`)

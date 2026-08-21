@@ -1,18 +1,22 @@
 export interface CohortSummary {
   cacheReadTokensMean: number
+  compactionSummariesMean: number
   durationMsP50: number
   durationMsP95: number
   evidenceAfterMutationRate: number
+  experienceRecoveriesMean: number
   failedToolResultsMean: number
   inputTokensMean: number
   mutationCallsMean: number
   outputTokensMean: number
   passRate: number
   rawCoverage: number
+  resumeBoundariesMean: number
   samples: number
   stepsMean: number
   timeoutRate: number
   toolCallsMean: number
+  turnsMean: number
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -41,11 +45,15 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
   let output = 0
   let cache = 0
   let evidenceAfterMutation = 0
+  let experienceRecoveries = 0
   let failedToolResults = 0
   let mutationCalls = 0
   let mutationSamples = 0
   let steps = 0
   let toolCalls = 0
+  let compactionSummaries = 0
+  let resumeBoundaries = 0
+  let turns = 0
   const durations: number[] = []
   for (const label of labels) {
     const testCase = record(label.case)
@@ -56,7 +64,11 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
     input += number(metrics.inputTokens)
     output += number(metrics.outputTokens)
     cache += number(metrics.cacheReadTokens)
+    compactionSummaries += number(metrics.compactionSummaries)
+    resumeBoundaries += number(metrics.resumeBoundaries)
+    turns += number(metrics.turns)
     failedToolResults += number(metrics.failedToolResults)
+    experienceRecoveries += number(metrics.experienceRecoveries)
     const sampleMutations = number(metrics.mutationCalls)
     mutationCalls += sampleMutations
     if (sampleMutations > 0) {
@@ -71,19 +83,23 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
   const samples = labels.length
   return {
     cacheReadTokensMean: mean(cache, samples),
+    compactionSummariesMean: mean(compactionSummaries, samples),
     durationMsP50: quantile(durations, 0.5),
     durationMsP95: quantile(durations, 0.95),
     evidenceAfterMutationRate: mutationSamples === 0 ? 1 : mean(evidenceAfterMutation, mutationSamples),
+    experienceRecoveriesMean: mean(experienceRecoveries, samples),
     failedToolResultsMean: mean(failedToolResults, samples),
     inputTokensMean: mean(input, samples),
     mutationCallsMean: mean(mutationCalls, samples),
     outputTokensMean: mean(output, samples),
     passRate: mean(passed, samples),
     rawCoverage: mean(withRaw, samples),
+    resumeBoundariesMean: mean(resumeBoundaries, samples),
     samples,
     stepsMean: mean(steps, samples),
     timeoutRate: mean(timedOut, samples),
     toolCallsMean: mean(toolCalls, samples),
+    turnsMean: mean(turns, samples),
   }
 }
 

@@ -1,0 +1,6 @@
+- id: headless-runner
+  disabled: true
+
+- insert:
+    - id: mythos-journey-turn-runner
+      name: '../../../eval/journey-turn-runner.ts'

@@ -15,19 +15,23 @@ describe('flywheel analysis', () => {
       { case: { durationMs: 30, metrics: { cacheReadTokens: 5, evidenceAfterMutation: false, failedToolResults: 0, inputTokens: 20, mutationCalls: 1, outputTokens: 4, steps: 3, toolCalls: { read: 2, write: 1 } }, passed: false, timedOut: true }, raw: null },
     ])).toEqual({
       cacheReadTokensMean: 4,
+      compactionSummariesMean: 0,
       durationMsP50: 10,
       durationMsP95: 30,
       evidenceAfterMutationRate: 0.5,
+      experienceRecoveriesMean: 0,
       failedToolResultsMean: 0.5,
       inputTokensMean: 15,
       mutationCallsMean: 1,
       outputTokensMean: 3,
       passRate: 0.5,
       rawCoverage: 0.5,
+      resumeBoundariesMean: 0,
       samples: 2,
       stepsMean: 2,
       timeoutRate: 0.5,
       toolCallsMean: 2.5,
+      turnsMean: 0,
     })
   })
 })

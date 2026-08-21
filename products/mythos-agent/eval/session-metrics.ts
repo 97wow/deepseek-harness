@@ -2,14 +2,18 @@ import { execFileSync } from 'node:child_process'
 
 export interface SessionMetrics {
   cacheReadTokens: number
+  compactionSummaries: number
   evidenceAfterMutation: boolean
+  experienceRecoveries: number
   failedToolResults: number
   inputTokens: number
   mutationCalls: number
   outputTokens: number
+  resumeBoundaries: number
   steps: number
   toolCalls: Record<string, number>
   toolResults: number
+  turns: number
   turnReason?: string
 }
 
@@ -37,14 +41,18 @@ function containsObservedFailure(value: unknown): boolean {
 export function parseSessionJsonl(jsonl: string): SessionMetrics {
   const metrics: SessionMetrics = {
     cacheReadTokens: 0,
+    compactionSummaries: 0,
     evidenceAfterMutation: false,
+    experienceRecoveries: 0,
     failedToolResults: 0,
     inputTokens: 0,
     mutationCalls: 0,
     outputTokens: 0,
+    resumeBoundaries: 0,
     steps: 0,
     toolCalls: {},
     toolResults: 0,
+    turns: 0,
   }
 
   for (const line of jsonl.split('\n')) {
@@ -62,6 +70,29 @@ export function parseSessionJsonl(jsonl: string): SessionMetrics {
 
     const type = event.type
     const data = asRecord(event.data)
+
+    if (type === 'user/message') {
+      const source = asRecord(data?.source) ?? asRecord(asRecord(data?.message)?.source)
+      if (source?.kind === 'plugin' && source.plugin === 'mythos-experience') {
+        metrics.experienceRecoveries += 1
+      }
+      continue
+    }
+
+    if (type === 'turn/start') {
+      metrics.turns += 1
+      continue
+    }
+
+    if (type === 'session/end-seed') {
+      metrics.resumeBoundaries += 1
+      continue
+    }
+
+    if (type === 'compaction/summary') {
+      metrics.compactionSummaries += 1
+      continue
+    }
 
     if (type === 'assistant/chunk') {
       const chunk = asRecord(data?.chunk)

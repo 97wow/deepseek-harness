@@ -18,6 +18,7 @@ for (const script of [
   'flywheel:analyze',
   'gate',
   'gate:comprehensive',
+  'gate:journey',
   'release:check',
 ]) run(script)
 process.stdout.write('Mythos release verify: 全部门禁通过\n')

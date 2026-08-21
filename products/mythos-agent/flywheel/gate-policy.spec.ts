@@ -3,19 +3,23 @@ import { evaluateReleaseGate } from './gate-policy.js'
 
 const healthy = {
   cacheReadTokensMean: 0,
+  compactionSummariesMean: 0,
   durationMsP50: 10,
   durationMsP95: 20,
   evidenceAfterMutationRate: 1,
+  experienceRecoveriesMean: 0,
   failedToolResultsMean: 0,
   inputTokensMean: 1,
   mutationCallsMean: 1,
   outputTokensMean: 1,
   passRate: 1,
   rawCoverage: 1,
+  resumeBoundariesMean: 2,
   samples: 3,
   stepsMean: 1,
   timeoutRate: 0,
   toolCallsMean: 2,
+  turnsMean: 3,
 }
 
 describe('evaluateReleaseGate', () => {
@@ -35,15 +39,19 @@ describe('evaluateReleaseGate', () => {
         rawCoverage: 0.5,
         samples: 2,
         timeoutRate: 0.5,
+        resumeBoundariesMean: 1,
+        turnsMean: 2,
       },
     }, {
       caseIds: ['case', 'missing'],
       cohortPrefix: 'current',
       maxDurationMsP95: 100,
       minEvidenceAfterMutationRate: 1,
+      minResumeBoundariesMean: 2,
       minSamples: 3,
+      minTurnsMean: 3,
     })
     expect(result.passed).toBe(false)
-    expect(result.failures).toHaveLength(7)
+    expect(result.failures).toHaveLength(9)
   })
 })
