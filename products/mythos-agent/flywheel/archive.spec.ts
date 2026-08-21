@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -28,15 +29,21 @@ async function fixture(): Promise<ArchiveOptions> {
 async function writeReport(
   options: ArchiveOptions,
   cases: Record<string, unknown>[],
+  runId = 'run-1',
+  filename = 'run.json',
 ): Promise<void> {
-  await writeFile(join(options.runsRoot, 'run.json'), JSON.stringify({
+  await writeFile(join(options.runsRoot, filename), JSON.stringify({
     baseline: { dshVersion: 'test' },
     cases,
     completedAt: '2026-01-01T00:00:01Z',
     reportVersion: 1,
-    runId: 'run-1',
+    runId,
     startedAt: '2026-01-01T00:00:00Z',
   }))
+}
+
+function digest(content: string): string {
+  return createHash('sha256').update(content).digest('hex')
 }
 
 describe('archiveFlywheel', () => {
@@ -110,6 +117,17 @@ describe('archiveFlywheel', () => {
     const options = await fixture()
     await writeFile(join(options.runsRoot, 'run.json'), JSON.stringify({ cases: [], reportVersion: 2, runId: 'run-1' }))
     await expect(archiveFlywheel(options)).rejects.toThrow('schema')
+  })
+
+  it.each([
+    ['runId', '../run', 'case'],
+    ['caseId', 'run-1', 'case/escape'],
+    ['empty caseId', 'run-1', ''],
+    ['case-folding caseId', 'run-1', 'Case'],
+  ])('拒绝非规范 %s', async (_name, runId, caseId) => {
+    const options = await fixture()
+    await writeReport(options, [{ id: caseId, passed: true }], runId)
+    await expect(archiveFlywheel(options)).rejects.toThrow('规范标识符')
   })
 
   it.each(['accepted', 'evidence', 'source-summary'] as const)('篡改 %s 的三个完整 v2 报告无法通过 archive→analysis→gate', async attack => {
@@ -205,7 +223,112 @@ describe('archiveFlywheel', () => {
     first[target] = second[target]
     second[target] = reference
     await writeFile(indexPath, `${rows.map(row => JSON.stringify(row)).join('\n')}\n`)
-    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow('绑定不一致')
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow(target === 'label' ? '规范证据路径' : '绑定不一致')
+  })
+
+  it('即使 index 与 label 同步改指向另一 case 的 raw 也拒绝', async () => {
+    const options = await fixture()
+    const firstRaw = join(options.sessionsRoot, 'a.zstd')
+    const secondRaw = join(options.sessionsRoot, 'b.zstd')
+    await writeFile(firstRaw, 'first')
+    await writeFile(secondRaw, 'second')
+    await writeReport(options, [
+      { id: 'case-a', passed: true, rawSession: relative(options.productRoot, firstRaw) },
+      { id: 'case-b', passed: true, rawSession: relative(options.productRoot, secondRaw) },
+    ])
+    await archiveFlywheel(options)
+    const indexPath = join(options.outputRoot, 'index.jsonl')
+    const rows = (await readFile(indexPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    const first = rows[0]!
+    first.raw = rows[1]!.raw
+    const labelReference = first.label as { path: string; sha256: string }
+    const labelPath = join(options.outputRoot, labelReference.path)
+    const label = JSON.parse(await readFile(labelPath, 'utf8')) as Record<string, unknown>
+    label.raw = first.raw
+    const labelContent = `${JSON.stringify(label, null, 2)}\n`
+    await writeFile(labelPath, labelContent)
+    labelReference.sha256 = digest(labelContent)
+    await writeFile(indexPath, `${rows.map(row => JSON.stringify(row)).join('\n')}\n`)
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow('规范证据路径')
+  })
+
+  it('复制 label 到归档根并同步 index 仍拒绝', async () => {
+    const options = await fixture()
+    await writeReport(options, [{ id: 'case', passed: true }])
+    await archiveFlywheel(options)
+    const indexPath = join(options.outputRoot, 'index.jsonl')
+    const row = JSON.parse((await readFile(indexPath, 'utf8')).trim()) as Record<string, unknown>
+    const reference = row.label as { path: string; sha256: string }
+    const content = await readFile(join(options.outputRoot, reference.path), 'utf8')
+    await writeFile(join(options.outputRoot, 'copied-label.json'), content)
+    reference.path = 'copied-label.json'
+    reference.sha256 = digest(content)
+    await writeFile(indexPath, `${JSON.stringify(row)}\n`)
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow('规范证据路径')
+  })
+
+  it('拒绝跨 run 交换 case 证据路径', async () => {
+    const options = await fixture()
+    const firstRaw = join(options.sessionsRoot, 'a.zstd')
+    const secondRaw = join(options.sessionsRoot, 'b.zstd')
+    await writeFile(firstRaw, 'first-run')
+    await writeFile(secondRaw, 'second-run')
+    await writeReport(options, [{ id: 'case-a', passed: true, rawSession: relative(options.productRoot, firstRaw) }], 'run-a', 'a.json')
+    await writeReport(options, [{ id: 'case-b', passed: true, rawSession: relative(options.productRoot, secondRaw) }], 'run-b', 'b.json')
+    await archiveFlywheel(options)
+    const indexPath = join(options.outputRoot, 'index.jsonl')
+    const rows = (await readFile(indexPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    ;[rows[0]!.label, rows[1]!.label] = [rows[1]!.label, rows[0]!.label]
+    ;[rows[0]!.raw, rows[1]!.raw] = [rows[1]!.raw, rows[0]!.raw]
+    await writeFile(indexPath, `${rows.map(row => JSON.stringify(row)).join('\n')}\n`)
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow('规范证据路径')
+  })
+
+  it('拒绝两个 case 使用同内容 digest 的 raw 副本', async () => {
+    const options = await fixture()
+    const firstRaw = join(options.sessionsRoot, 'a.zstd')
+    const secondRaw = join(options.sessionsRoot, 'b.zstd')
+    await writeFile(firstRaw, 'same-evidence')
+    await writeFile(secondRaw, 'same-evidence')
+    await writeReport(options, [
+      { id: 'case-a', passed: true, rawSession: relative(options.productRoot, firstRaw) },
+      { id: 'case-b', passed: true, rawSession: relative(options.productRoot, secondRaw) },
+    ])
+    await expect(archiveFlywheel(options)).rejects.toThrow('raw evidence 必须按 case 唯一')
+  })
+
+  it('删除任一合法 index 行会因 report case 集不完整而拒绝', async () => {
+    const options = await fixture()
+    await writeReport(options, [{ id: 'case-a', passed: true }, { id: 'case-b', passed: true }])
+    await archiveFlywheel(options)
+    const indexPath = join(options.outputRoot, 'index.jsonl')
+    const rows = (await readFile(indexPath, 'utf8')).trim().split('\n')
+    await writeFile(indexPath, `${rows[0]}\n`)
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow('未完整覆盖 report case 集')
+  })
+
+  it('追加未知 index 行会被 report case 集交叉验证拒绝', async () => {
+    const options = await fixture()
+    await writeReport(options, [{ id: 'case', passed: true }])
+    await archiveFlywheel(options)
+    const indexPath = join(options.outputRoot, 'index.jsonl')
+    const row = JSON.parse((await readFile(indexPath, 'utf8')).trim()) as Record<string, unknown>
+    const unknown = { ...row, caseId: 'unknown-case' }
+    await writeFile(indexPath, `${JSON.stringify(row)}\n${JSON.stringify(unknown)}\n`)
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow()
+  })
+
+  it.each(['runId', 'caseId', 'cohort'] as const)('交换 index 的 %s 身份字段会被拒绝', async field => {
+    const options = await fixture()
+    await writeReport(options, [{ id: 'case-a', passed: true }, { id: 'case-b', passed: true }])
+    await archiveFlywheel(options)
+    const indexPath = join(options.outputRoot, 'index.jsonl')
+    const rows = (await readFile(indexPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    if (field === 'runId') rows[0]!.runId = 'other-run'
+    else if (field === 'caseId') rows[0]!.caseId = 'case-b'
+    else rows[0]!.cohort = rows[1]!.cohort
+    await writeFile(indexPath, `${rows.map(row => JSON.stringify(row)).join('\n')}\n`)
+    await expect(readArchivedLabels(options.outputRoot)).rejects.toThrow()
   })
 
   it.each(['/absolute/label.json', '../escape.json'])('读取时拒绝不安全归档路径 %s', async unsafe => {

@@ -50,6 +50,78 @@ export const internalEvaluationModules: Readonly<Record<string, readonly Evaluat
   'journey-turn-runner.ts': ['advanced-journey', 'journey'],
 }
 
+function shellTokens(command: string): string[] {
+  const tokens: string[] = []
+  let token = ''
+  let quote: "'" | '"' | null = null
+  let escaped = false
+  const flush = (): void => {
+    if (token !== '') tokens.push(token)
+    token = ''
+  }
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!
+    if (escaped) {
+      token += character
+      escaped = false
+      continue
+    }
+    if (character === '\\' && quote !== "'") {
+      escaped = true
+      continue
+    }
+    if (quote !== null) {
+      if (character === quote) quote = null
+      else token += character
+      continue
+    }
+    if (character === "'" || character === '"') {
+      quote = character
+      continue
+    }
+    if (/\s/u.test(character)) {
+      flush()
+      continue
+    }
+    if (character === ';' || character === '|'
+      || (character === '&' && command[index + 1] === '&')) {
+      flush()
+      const paired = (character === '&' || character === '|') && command[index + 1] === character
+      tokens.push(paired ? `${character}${character}` : character)
+      if (paired) index += 1
+      continue
+    }
+    token += character
+  }
+  if (escaped) token += '\\'
+  flush()
+  return tokens
+}
+
+/**
+ * Extracts statically declared TypeScript evaluation entrypoints from a package script without executing a shell.
+ * @param command Package script source text.
+ * @returns Canonical filenames below the product's eval directory.
+ */
+export function extractEvaluationEntrypoints(command: string): string[] {
+  const tokens = shellTokens(command)
+  const entrypoints: string[] = []
+  const operators = new Set(['&&', '||', ';', '|'])
+  for (let index = 0; index < tokens.length; index += 1) {
+    const executable = tokens[index]!
+    if (executable !== 'tsx' && !executable.endsWith('/tsx')) continue
+    for (let argument = index + 1; argument < tokens.length && !operators.has(tokens[argument]!); argument += 1) {
+      const match = /^(?:\.\/)?eval\/([a-zA-Z0-9][a-zA-Z0-9._-]*\.ts)$/u.exec(tokens[argument]!)
+      if (match) {
+        entrypoints.push(match[1]!)
+        index = argument
+        break
+      }
+    }
+  }
+  return entrypoints
+}
+
 export interface ReportCase {
   agentIdleObserved?: boolean
   billing?: unknown

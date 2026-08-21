@@ -11,6 +11,7 @@ import {
   endpointCommitment,
   evaluationCommitment,
   evaluationEntrypoints,
+  extractEvaluationEntrypoints,
   internalEvaluationModules,
   implementationFiles,
   parseEvaluationReport,
@@ -107,10 +108,20 @@ describe('M3 + DSH 评测证据报告', () => {
     const manifest = JSON.parse(await readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')) as {
       scripts: Record<string, string>
     }
-    const files = Object.values(manifest.scripts).flatMap(command => [...command.matchAll(/\btsx\s+eval\/([a-z0-9-]+\.ts)\b/gu)]
-      .map(match => match[1]!)).sort()
+    const files = Object.values(manifest.scripts).flatMap(extractEvaluationEntrypoints).sort()
     expect(Object.keys(evaluationEntrypoints).sort()).toEqual([...new Set(files)])
     expect(evaluationEntrypoints['qwen-local-benchmark.ts']).toBe('qwen-local')
+  })
+
+  it.each([
+    ['tsx --tsconfig config.json eval/new-entry.ts --case a', ['new-entry.ts']],
+    ['tsx ./eval/new-entry.ts --case a', ['new-entry.ts']],
+    ["MODE=test tsx 'eval/new-entry.ts' --case a", ['new-entry.ts']],
+    ['MODE=test tsx "./eval/new-entry.ts" --case a', ['new-entry.ts']],
+    ['tsx product/launch.ts && tsx --tsconfig x eval/new-entry.ts --variant v', ['new-entry.ts']],
+    ['tsc --noEmit eval/not-an-entry.ts', []],
+  ])('静态提取公开入口：%s', (command, expected) => {
+    expect(extractEvaluationEntrypoints(command)).toEqual(expected)
   })
 
   it('内部非公开 runner 显式声明全部 commitment 归属', () => {

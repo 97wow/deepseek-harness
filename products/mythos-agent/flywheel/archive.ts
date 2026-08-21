@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, constants } from 'node:fs'
 import { chmod, copyFile, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { isAbsolute, join, resolve, sep } from 'node:path'
 import { authoritativeCaseSemantics, parseEvaluationReport } from '../eval/report-contract.js'
 import { readCompressedSessionMetrics } from '../eval/session-metrics.js'
 
@@ -17,11 +17,36 @@ export interface ArchiveResult {
   samples: number
 }
 
-const safeId = /^[a-zA-Z0-9._-]+$/
+const canonicalId = /^[a-z0-9](?:[a-z0-9_-]{0,127})?$/u
 const safeSha256 = /^[a-f0-9]{64}$/u
 
-function isSafeId(value: unknown): value is string {
-  return typeof value === 'string' && value !== '.' && value !== '..' && safeId.test(value)
+function isCanonicalId(value: unknown): value is string {
+  return typeof value === 'string' && canonicalId.test(value)
+}
+
+function requireCanonicalId(value: unknown, kind: string): string {
+  if (!isCanonicalId(value)) throw new Error(`${kind} 不是规范标识符`)
+  return value
+}
+
+function reportArchivePath(runId: string): string {
+  return `runs/${runId}/report.json`
+}
+
+function caseArchiveRoot(runId: string, caseId: string): string {
+  return `runs/${runId}/${caseId}`
+}
+
+function labelArchivePath(runId: string, caseId: string): string {
+  return `${caseArchiveRoot(runId, caseId)}/label.json`
+}
+
+function rawArchivePath(runId: string, caseId: string): string {
+  return `${caseArchiveRoot(runId, caseId)}/session.jsonl.zstd`
+}
+
+function relatedRawArchivePath(runId: string, caseId: string, index: number): string {
+  return `${caseArchiveRoot(runId, caseId)}/related/session-${index + 1}.jsonl.zstd`
 }
 
 async function sha256(path: string): Promise<string> {
@@ -123,34 +148,48 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
   const trustedRoot = await realpath(sessionsRoot)
   const filenames = (await readdir(runsRoot)).filter(name => name.endsWith('.json')).sort()
   const index: Record<string, unknown>[] = []
+  const archivedRuns = new Set<string>()
+  const evidenceDigests = new Set<string>()
+  const evidencePaths = new Set<string>()
+  const labelDigests = new Set<string>()
+  const labelPaths = new Set<string>()
   let rawSessions = 0
+
+  await mkdir(join(outputRoot, 'runs'), { mode: 0o700, recursive: true })
 
   for (const filename of filenames) {
     const reportContent = await readFile(join(runsRoot, filename), 'utf8')
     const report = parseEvaluationReport(JSON.parse(reportContent))
     const legacy = report.reportVersion === 1
-    const runId = report.runId
-    if (!isSafeId(runId)) continue
+    const runId = requireCanonicalId(report.runId, 'runId')
+    if (archivedRuns.has(runId)) throw new Error('同一归档中 runId 必须唯一')
+    archivedRuns.add(runId)
     const runRoot = join(outputRoot, 'runs', runId)
     await mkdir(runRoot, { mode: 0o700, recursive: true })
-    const archivedReportPath = join(runRoot, 'report.json')
+    const archivedReportPath = join(outputRoot, reportArchivePath(runId))
     await writeImmutable(archivedReportPath, reportContent)
-    const reportReference = { path: relative(outputRoot, archivedReportPath), sha256: contentSha256(reportContent) }
+    const reportReference = { path: reportArchivePath(runId), sha256: contentSha256(reportContent) }
     const commitment = reportCommitment(report)
     const cases = Array.isArray(report.cases) ? report.cases : []
+    const caseIds = cases.map(item => requireCanonicalId(object(item).id, 'caseId'))
+    if (new Set(caseIds).size !== caseIds.length) throw new Error('同一报告中 caseId 必须唯一')
     for (const item of cases) {
-      if (typeof item !== 'object' || item === null) continue
+      if (typeof item !== 'object' || item === null) throw new Error('评测 case 必须是对象')
       const testCase = item as Record<string, unknown>
-      const caseId = testCase.id
-      if (!isSafeId(caseId)) continue
+      const caseId = requireCanonicalId(testCase.id, 'caseId')
       const caseRoot = join(outputRoot, 'runs', runId, caseId)
       await mkdir(caseRoot, { mode: 0o700, recursive: true })
       let raw: { byteExact: true, path: string, sha256: string } | null = null
       if (testCase.rawSession !== undefined) {
         const source = await resolveRawSession(productRoot, sessionsRoot, trustedRoot, testCase.rawSession)
         if (!legacy) verifyV2RawMetrics(source, testCase)
-        const archivedRawPath = join(caseRoot, 'session.jsonl.zstd')
-        raw = { byteExact: true, path: relative(outputRoot, archivedRawPath), sha256: await copyRawImmutable(source, archivedRawPath) }
+        const archivePath = rawArchivePath(runId, caseId)
+        const archivedRawPath = join(outputRoot, archivePath)
+        const digest = await copyRawImmutable(source, archivedRawPath)
+        if (evidencePaths.has(archivePath) || evidenceDigests.has(digest)) throw new Error('raw evidence 必须按 case 唯一')
+        evidencePaths.add(archivePath)
+        evidenceDigests.add(digest)
+        raw = { byteExact: true, path: archivePath, sha256: digest }
         rawSessions += 1
       }
       const relatedRaw: { byteExact: true; path: string; sha256: string }[] = []
@@ -159,8 +198,13 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
         await mkdir(relatedRoot, { mode: 0o700, recursive: true })
         for (let index = 0; index < testCase.relatedRawSessions.length; index += 1) {
           const source = await resolveRawSession(productRoot, sessionsRoot, trustedRoot, testCase.relatedRawSessions[index])
-          const destination = join(relatedRoot, `session-${index + 1}.jsonl.zstd`)
-          relatedRaw.push({ byteExact: true, path: relative(outputRoot, destination), sha256: await copyRawImmutable(source, destination) })
+          const archivePath = relatedRawArchivePath(runId, caseId, index)
+          const destination = join(outputRoot, archivePath)
+          const digest = await copyRawImmutable(source, destination)
+          if (evidencePaths.has(archivePath) || evidenceDigests.has(digest)) throw new Error('raw evidence 必须按 case 唯一')
+          evidencePaths.add(archivePath)
+          evidenceDigests.add(digest)
+          relatedRaw.push({ byteExact: true, path: archivePath, sha256: digest })
           rawSessions += 1
         }
       }
@@ -188,11 +232,16 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
       const labelPath = join(caseRoot, 'label.json')
       const labelContent = `${JSON.stringify(label, null, 2)}\n`
       await writeImmutable(labelPath, labelContent)
+      const archivedLabelPath = labelArchivePath(runId, caseId)
+      const labelSha256 = contentSha256(labelContent)
+      if (labelPaths.has(archivedLabelPath) || labelDigests.has(labelSha256)) throw new Error('label 必须按 case 唯一')
+      labelPaths.add(archivedLabelPath)
+      labelDigests.add(labelSha256)
       index.push({
         caseId,
         cohort: cohort(report, caseId),
         commitment,
-        label: { path: relative(outputRoot, labelPath), sha256: contentSha256(labelContent) },
+        label: { path: archivedLabelPath, sha256: labelSha256 },
         raw,
         relatedRaw,
         report: reportReference,
@@ -224,7 +273,9 @@ async function verifiedArchivedPath(root: string, value: unknown): Promise<strin
 }
 
 async function verifiedContent(root: string, reference: Record<string, unknown>, kind: string): Promise<{ content: string; path: string }> {
-  if (typeof reference.sha256 !== 'string' || !safeSha256.test(reference.sha256)) throw new Error(`${kind} digest 无效`)
+  if (!hasOnlyKeys(reference, ['path', 'sha256']) || typeof reference.sha256 !== 'string' || !safeSha256.test(reference.sha256)) {
+    throw new Error(`${kind} reference 无效`)
+  }
   const path = await verifiedArchivedPath(root, reference.path)
   const content = await readFile(path, 'utf8')
   if (contentSha256(content) !== reference.sha256) throw new Error(`${kind} 内容摘要不一致`)
@@ -232,10 +283,21 @@ async function verifiedContent(root: string, reference: Record<string, unknown>,
 }
 
 async function verifyRawReference(root: string, reference: Record<string, unknown>, kind: string): Promise<string> {
-  if (typeof reference.sha256 !== 'string' || !safeSha256.test(reference.sha256)) throw new Error(`${kind} digest 无效`)
+  if (!hasOnlyKeys(reference, ['byteExact', 'path', 'sha256']) || reference.byteExact !== true
+    || typeof reference.sha256 !== 'string' || !safeSha256.test(reference.sha256)) throw new Error(`${kind} reference 无效`)
   const path = await verifiedArchivedPath(root, reference.path)
   if (await sha256(path) !== reference.sha256) throw new Error(`${kind} 内容摘要不一致`)
   return path
+}
+
+function requireReferencePath(reference: Record<string, unknown>, expected: string, kind: string): void {
+  if (reference.path !== expected) throw new Error(`${kind} 不在规范证据路径`)
+}
+
+interface ReportGroup {
+  expectedCaseIds: Set<string>
+  reportReference: Record<string, unknown>
+  seenCaseIds: Set<string>
 }
 
 /**
@@ -248,22 +310,47 @@ export async function readArchivedLabels(dataRoot: string): Promise<Record<strin
   const rows = (await readFile(indexPath, 'utf8')).split('\n').filter(Boolean)
     .map(line => JSON.parse(line) as Record<string, unknown>)
   const seen = new Set<string>()
+  const groups = new Map<string, ReportGroup>()
+  const reportOwners = new Map<string, string>()
+  const evidenceDigests = new Set<string>()
+  const evidencePaths = new Set<string>()
+  const labelDigests = new Set<string>()
+  const labelPaths = new Set<string>()
   const labels: Record<string, unknown>[] = []
   for (const row of rows) {
     const caseId = row.caseId
     const runId = row.runId
     if (!hasOnlyKeys(row, ['caseId', 'cohort', 'commitment', 'label', 'raw', 'relatedRaw', 'report', 'runId'])
-      || !isSafeId(caseId) || !isSafeId(runId) || typeof row.cohort !== 'string') throw new Error('归档索引身份字段无效')
+      || !isCanonicalId(caseId) || !isCanonicalId(runId) || typeof row.cohort !== 'string') throw new Error('归档索引身份字段无效')
     const identity = `${runId}:${caseId}`
     if (seen.has(identity)) throw new Error('归档索引存在重复 case')
     seen.add(identity)
 
     const reportReference = object(row.report)
     const labelReference = object(row.label)
+    requireReferencePath(reportReference, reportArchivePath(runId), 'report')
+    requireReferencePath(labelReference, labelArchivePath(runId, caseId), 'label')
+    if (typeof labelReference.sha256 !== 'string' || labelPaths.has(labelReference.path as string)
+      || labelDigests.has(labelReference.sha256)) throw new Error('归档 label 路径或内容不唯一')
+    labelPaths.add(labelReference.path as string)
+    labelDigests.add(labelReference.sha256)
+    const reportOwner = reportOwners.get(reportReference.path as string)
+    if (reportOwner !== undefined && reportOwner !== runId) throw new Error('归档 report 不得跨 run 共享')
+    reportOwners.set(reportReference.path as string, runId)
     const [{ content: reportContent }, { content: labelContent }] = await Promise.all([
       verifiedContent(root, reportReference, 'report'), verifiedContent(root, labelReference, 'label'),
     ])
     const report = parseEvaluationReport(JSON.parse(reportContent))
+    const reportCases = Array.isArray(report.cases) ? report.cases.map(object) : []
+    const expectedCaseIds = reportCases.map(item => requireCanonicalId(item.id, 'report caseId'))
+    if (new Set(expectedCaseIds).size !== expectedCaseIds.length) throw new Error('report caseId 不唯一')
+    const existingGroup = groups.get(runId)
+    if (existingGroup) {
+      if (canonical(existingGroup.reportReference) !== canonical(reportReference)) throw new Error('同一 run 的 report 绑定不一致')
+      existingGroup.seenCaseIds.add(caseId)
+    } else {
+      groups.set(runId, { expectedCaseIds: new Set(expectedCaseIds), reportReference, seenCaseIds: new Set([caseId]) })
+    }
     const label = object(JSON.parse(labelContent))
     if (!hasOnlyKeys(label, ['baseline', 'case', 'commitment', 'completedAt', 'evidenceStatus', 'raw', 'relatedRaw', 'replay',
       'report', 'reportVersion', 'runId', 'startedAt'])
@@ -271,11 +358,11 @@ export async function readArchivedLabels(dataRoot: string): Promise<Record<strin
       || canonical(label.report) !== canonical(reportReference) || canonical(label.commitment) !== canonical(row.commitment)) {
       throw new Error('归档 report/label/index 绑定不一致')
     }
-    const reportCases = Array.isArray(report.cases) ? report.cases.map(object).filter(item => item.id === caseId) : []
-    if (reportCases.length !== 1 || object(label.case).id !== caseId || cohort(report, caseId) !== row.cohort) {
+    const matchingCases = reportCases.filter(item => item.id === caseId)
+    if (matchingCases.length !== 1 || object(label.case).id !== caseId || cohort(report, caseId) !== row.cohort) {
       throw new Error('归档 case/cohort 绑定不一致')
     }
-    const reportCase = reportCases[0]!
+    const reportCase = matchingCases[0]!
     const legacy = report.reportVersion === 1
     const expectedCase = legacy ? {
       accepted: false,
@@ -295,6 +382,11 @@ export async function readArchivedLabels(dataRoot: string): Promise<Record<strin
     const labelRaw = label.raw === null ? null : object(label.raw)
     if (canonical(rawReference) !== canonical(labelRaw)) throw new Error('归档 raw 绑定不一致')
     if (rawReference) {
+      requireReferencePath(rawReference, rawArchivePath(runId, caseId), 'raw session')
+      if (typeof rawReference.sha256 !== 'string' || evidencePaths.has(rawReference.path as string)
+        || evidenceDigests.has(rawReference.sha256)) throw new Error('归档 raw evidence 路径或内容不唯一')
+      evidencePaths.add(rawReference.path as string)
+      evidenceDigests.add(rawReference.sha256)
       const rawPath = await verifyRawReference(root, rawReference, 'raw session')
       if (!legacy) verifyV2RawMetrics(rawPath, reportCase)
     }
@@ -302,8 +394,34 @@ export async function readArchivedLabels(dataRoot: string): Promise<Record<strin
     if (canonical(related) !== canonical(Array.isArray(label.relatedRaw) ? label.relatedRaw : [])) {
       throw new Error('归档 related raw 绑定不一致')
     }
-    await Promise.all(related.map((reference, index) => verifyRawReference(root, reference, `related raw ${index + 1}`)))
+    for (let index = 0; index < related.length; index += 1) {
+      const reference = related[index]!
+      requireReferencePath(reference, relatedRawArchivePath(runId, caseId, index), `related raw ${index + 1}`)
+      if (typeof reference.sha256 !== 'string' || evidencePaths.has(reference.path as string)
+        || evidenceDigests.has(reference.sha256)) throw new Error('归档 raw evidence 路径或内容不唯一')
+      evidencePaths.add(reference.path as string)
+      evidenceDigests.add(reference.sha256)
+      await verifyRawReference(root, reference, `related raw ${index + 1}`)
+    }
     labels.push(label)
+  }
+  for (const [runId, group] of groups) {
+    if (group.expectedCaseIds.size !== group.seenCaseIds.size
+      || [...group.expectedCaseIds].some(caseId => !group.seenCaseIds.has(caseId))) {
+      throw new Error(`归档索引未完整覆盖 report case 集：${runId}`)
+    }
+  }
+  const runsPath = join(root, 'runs')
+  const runEntries = await readdir(runsPath, { withFileTypes: true })
+  const archivedRunIds = new Set<string>()
+  for (const entry of runEntries) {
+    if (!entry.isDirectory() || !isCanonicalId(entry.name)) throw new Error('归档包含非规范 run 目录')
+    const reportPath = reportArchivePath(entry.name)
+    await verifiedArchivedPath(root, reportPath)
+    archivedRunIds.add(entry.name)
+  }
+  if (archivedRunIds.size !== groups.size || [...archivedRunIds].some(runId => !groups.has(runId))) {
+    throw new Error('归档索引与 report run 集不完整')
   }
   return labels
 }
