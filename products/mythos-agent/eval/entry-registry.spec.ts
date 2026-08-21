@@ -107,13 +107,11 @@ describe('结构化评测入口 registry', () => {
     expect(() => validateEvaluationRegistry(evaluationEntryRegistry, invocations)).toThrow('未知或内部')
   })
 
-  it('internal entry 必须显式声明被公开 entry 固定引用', () => {
+  it('internal-helper 无法通过 registry validation，即使自报消费者', () => {
     const standard = evaluationEntryRegistry.get('standard')!
     const entries = new Map<string, EvaluationEntryDefinition>(evaluationEntryRegistry)
-    entries.set('internal-helper', { ...standard, referencedBy: [], visibility: 'internal' })
-    expect(() => validateEvaluationRegistry(entries, publicEvaluationScripts)).toThrow('缺少固定引用')
-    entries.set('internal-helper', { ...standard, referencedBy: ['standard'], visibility: 'internal' })
-    expect(() => validateEvaluationRegistry(entries, publicEvaluationScripts)).not.toThrow()
+    entries.set('internal-helper', { ...standard, referencedBy: ['standard'], visibility: 'internal' } as unknown as EvaluationEntryDefinition)
+    expect(() => validateEvaluationRegistry(entries, publicEvaluationScripts)).toThrow('禁止独立 internal entry')
   })
 
   it('registry 中所有 public script 的结构化参数均可验证', () => {

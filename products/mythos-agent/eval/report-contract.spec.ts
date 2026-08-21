@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { dirname, join } from 'node:path'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -19,7 +19,6 @@ import {
   type ReportCase,
 } from './report-contract.js'
 import { evaluationEntryRegistry } from './entry-registry.js'
-import { collectRelativeImportClosure } from './import-closure.js'
 
 const execFileAsync = promisify(execFile)
 const entries: EvaluationEntry[] = ['advanced-journey', 'journey', 'qwen-local', 'real-repository', 'standard']
@@ -32,16 +31,41 @@ async function fixture(): Promise<{ productRoot: string; repoRoot: string }> {
   for (const name of files) {
     const path = join(productRoot, name)
     await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, name === 'package.json' ? JSON.stringify({
+    const contents = name === 'package.json' ? JSON.stringify({
       mythos: { dshCommit: 'dsh-commit', dshVersion: '0.1.0-rc.8' }, version: '0.1.1',
-    }) : `${name}:initial\n`)
+    }) : name === 'eval/launch.ts' ? 'await import(dynamicEntry)\n'
+      : name === 'eval/journey-turn-runner.ts' ? 'require.resolve(dynamicPackage)\n' : `${name}:initial\n`
+    await writeFile(path, contents)
+  }
+  const packageDefinitions = [
+    ['@deepseek-ai/dsh-agent', 'packages/core/agent'],
+    ['@deepseek-ai/dsh-llm', 'packages/llm/llm'],
+    ['@deepseek-ai/dsh-session', 'packages/core/session'],
+  ] as const
+  await mkdir(join(repoRoot, 'apps/cli'), { recursive: true })
+  await writeFile(join(repoRoot, 'apps/cli/package.json'), JSON.stringify({
+    devDependencies: Object.fromEntries(packageDefinitions.map(([name]) => [name, 'workspace:^'])),
+  }))
+  await writeFile(join(repoRoot, 'package.json'), '{}')
+  await writeFile(join(repoRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
+  await writeFile(join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n')
+  for (const [name, directory] of packageDefinitions) {
+    await mkdir(join(repoRoot, directory, 'src'), { recursive: true })
+    await writeFile(join(repoRoot, directory, 'package.json'), JSON.stringify({
+      exports: { '.': { default: './lib/index.js' } }, main: 'lib/index.js', name,
+    }))
+    await writeFile(join(repoRoot, directory, 'src/index.ts'), `export const packageName = '${name}'\n`)
   }
   await execFileAsync('git', ['init', '-q'], { cwd: repoRoot })
   await execFileAsync('git', ['config', 'user.email', 'mythos@test.invalid'], { cwd: repoRoot })
   await execFileAsync('git', ['config', 'user.name', 'Mythos Test'], { cwd: repoRoot })
-  await execFileAsync('git', ['add', 'product'], { cwd: repoRoot })
+  await execFileAsync('git', ['add', '.'], { cwd: repoRoot })
   await execFileAsync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot })
   return { productRoot, repoRoot }
+}
+
+function commitmentFilePath(productRoot: string, repoRoot: string, path: string): string {
+  return path.startsWith('workspace:') ? join(repoRoot, path.slice('workspace:'.length)) : join(productRoot, path)
 }
 
 function completeCase(overrides: Partial<ReportCase> = {}): ReportCase {
@@ -93,12 +117,12 @@ describe('M3 + DSH 评测证据报告', () => {
 
   it.each([...evaluationEntryRegistry.keys()])('%s registry entry 的每个关键文件变更都会改变 commitment', async entryId => {
     const definition = evaluationEntryRegistry.get(entryId)!
-    const { productRoot } = await fixture()
+    const { productRoot, repoRoot } = await fixture()
     const overlays = definition.commitment === 'advanced-journey' ? ['eval/overlays/journey-subagent.yml'] : []
     let previous = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 },
       entry: definition.commitment, entryId, overlays, productRoot })
     for (const file of previous.files.map(item => item.path)) {
-      await writeFile(join(productRoot, file), file + ':changed:' + previous.sha256 + '\n')
+      await appendFile(commitmentFilePath(productRoot, repoRoot, file), '\n')
       const nextCommitment = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 },
         entry: definition.commitment, entryId, overlays, productRoot })
       expect(nextCommitment.sha256, file).not.toBe(previous.sha256)
@@ -118,10 +142,10 @@ describe('M3 + DSH 评测证据报告', () => {
   })
 
   it('registry 显式覆盖内部 runner 与 launcher commitment', () => {
-    expect(evaluationEntryRegistry.get('journey')!.dependencies).toContain('eval/journey-turn-runner.ts')
-    expect(evaluationEntryRegistry.get('advanced-journey')!.dependencies).toContain('eval/journey-turn-runner.ts')
-    expect(evaluationEntryRegistry.get('journey-repeat')!.dependencies).toContain('eval/options.ts')
-    expect(evaluationEntryRegistry.get('advanced-journey-repeat')!.dependencies).toContain('eval/options.ts')
+    expect(evaluationEntryRegistry.get('journey')!.internalDependencies).toContain('eval/journey-turn-runner.ts')
+    expect(evaluationEntryRegistry.get('advanced-journey')!.internalDependencies).toContain('eval/journey-turn-runner.ts')
+    expect(evaluationEntryRegistry.get('journey-repeat')!.internalDependencies).toContain('eval/options.ts')
+    expect(evaluationEntryRegistry.get('advanced-journey-repeat')!.internalDependencies).toContain('eval/options.ts')
     for (const entry of entries) {
       expect(implementationFiles(entry)).toEqual(expect.arrayContaining([
         'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts', 'package.json',
@@ -129,14 +153,22 @@ describe('M3 + DSH 评测证据报告', () => {
     }
   })
 
-  it.each([...evaluationEntryRegistry.keys()])('%s commitment 覆盖模块的完整本仓库相对 import 闭包', async entryId => {
+  it.each([...evaluationEntryRegistry.keys()])('%s commitment 完成静态与声明动态依赖闭包验证', async entryId => {
     const definition = evaluationEntryRegistry.get(entryId)!
     const productRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
     const commitment = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
       entry: definition.commitment, entryId, productRoot })
-    const roots = commitment.files.map(file => file.path).filter(path => path.endsWith('.ts'))
-    const closure = await collectRelativeImportClosure(productRoot, roots)
-    expect(commitment.files.map(file => file.path)).toEqual(expect.arrayContaining(closure))
+    expect(commitment.files.map(file => file.path)).toEqual(expect.arrayContaining([
+      'eval/entry-registry.ts', 'eval/import-closure.ts', 'eval/launch.ts', definition.module,
+    ]))
+    if (definition.commitment === 'journey' || definition.commitment === 'advanced-journey') {
+      expect(commitment.files.map(file => file.path)).toEqual(expect.arrayContaining([
+        'workspace:apps/cli/package.json', 'workspace:packages/core/agent/package.json',
+        'workspace:packages/core/agent/src/index.ts', 'workspace:packages/core/session/package.json',
+        'workspace:packages/core/session/src/index.ts', 'workspace:packages/llm/llm/package.json',
+        'workspace:packages/llm/llm/src/index.ts',
+      ]))
+    }
   })
 
   it('新增相对 import 自动进入 commitment 且被导入文件变异改变 SHA', async () => {
@@ -166,6 +198,25 @@ describe('M3 + DSH 评测证据报告', () => {
     }
     expect(message).toContain('无法解析')
     expect(message).not.toContain('secret-user-body-must-not-leak')
+  })
+
+  it('声明的 journey workspace 动态依赖目标变更会改变 digest', async () => {
+    const { productRoot, repoRoot } = await fixture()
+    const first = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'journey', entryId: 'journey', productRoot })
+    await appendFile(join(repoRoot, 'packages/core/agent/src/index.ts'), '\nexport const changed = true\n')
+    const second = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'journey', entryId: 'journey', productRoot })
+    expect(second.sha256).not.toBe(first.sha256)
+  })
+
+  it('workspace package manifest 改写固定入口时 fail closed', async () => {
+    const { productRoot, repoRoot } = await fixture()
+    await writeFile(join(repoRoot, 'packages/core/agent/package.json'), JSON.stringify({
+      exports: { '.': { default: './lib/other.js' } }, name: '@deepseek-ai/dsh-agent',
+    }))
+    await expect(evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1' },
+      entry: 'journey', entryId: 'journey', productRoot })).rejects.toThrow('固定源码入口不一致')
   })
 
   it('endpoint commitment 对完整 URL 语义敏感并拒绝 userinfo', () => {

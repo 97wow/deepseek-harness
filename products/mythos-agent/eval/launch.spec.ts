@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { evaluationEntryRegistry, type EvaluationEntryDefinition } from './entry-registry.js'
 import { launchEvaluation } from './launch.js'
 
 describe('结构化评测 launcher', () => {
@@ -22,5 +23,19 @@ describe('结构化评测 launcher', () => {
     await expect(launchEvaluation(['repeat', 'case-a', '--suite', 'all'], loader,
       { argv: ['node', 'launch'], environment: {} })).rejects.toThrow('必须位于')
     expect(loader).not.toHaveBeenCalled()
+  })
+
+  it('internal-helper 即使注入 registry 也不可启动且 loader 保持零调用', async () => {
+    const loader = vi.fn(async () => undefined)
+    const standard = evaluationEntryRegistry.get('standard')!
+    evaluationEntryRegistry.set('internal-helper' as never,
+      { ...standard, visibility: 'internal' } as unknown as EvaluationEntryDefinition)
+    try {
+      await expect(launchEvaluation(['internal-helper'], loader,
+        { argv: ['node', 'launch'], environment: {} })).rejects.toThrow('不可启动')
+      expect(loader).not.toHaveBeenCalled()
+    } finally {
+      evaluationEntryRegistry.delete('internal-helper' as never)
+    }
   })
 })

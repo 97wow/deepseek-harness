@@ -12,81 +12,120 @@ export type EvaluationEntryId =
   | 'repeat'
   | 'standard'
 
+export interface ScopedDependencyPath {
+  path: string
+  scope: 'product' | 'workspace'
+}
+
+export type DynamicDependencyRoot = {
+  kind: 'file'
+  loader: ScopedDependencyPath
+  root: ScopedDependencyPath
+} | {
+  kind: 'workspace-package'
+  loader: ScopedDependencyPath
+  manifest: string
+  packageName: string
+  sourceEntry: string
+}
+
 export interface EvaluationEntryDefinition {
   commitment: EvaluationEntry
-  dependencies: readonly string[]
+  dynamicDependencyRoots: readonly DynamicDependencyRoot[]
   environment: ReadonlyMap<string, string>
+  internalDependencies: readonly string[]
   module: `eval/${string}.ts`
   parameters: {
     caseIds: boolean
     options: ReadonlyMap<string, readonly string[]>
   }
-  referencedBy: readonly EvaluationEntryId[]
-  visibility: 'internal' | 'public'
+  visibility: 'public'
 }
 
 const noEnvironment = new Map<string, string>()
 const noOptions = new Map<string, readonly string[]>()
+const launcherLoader = { path: 'eval/launch.ts', scope: 'product' } as const
+const journeyLoader = { path: 'eval/journey-turn-runner.ts', scope: 'product' } as const
+
+function launcherDependency(module: `eval/${string}.ts`): DynamicDependencyRoot {
+  return { kind: 'file', loader: launcherLoader, root: { path: module, scope: 'product' } }
+}
+
+const journeyWorkspaceDependencies: readonly DynamicDependencyRoot[] = [
+  { kind: 'workspace-package', loader: journeyLoader, packageName: '@deepseek-ai/dsh-agent',
+    manifest: 'packages/core/agent/package.json', sourceEntry: 'packages/core/agent/src/index.ts' },
+  { kind: 'workspace-package', loader: journeyLoader, packageName: '@deepseek-ai/dsh-llm',
+    manifest: 'packages/llm/llm/package.json', sourceEntry: 'packages/llm/llm/src/index.ts' },
+  { kind: 'workspace-package', loader: journeyLoader, packageName: '@deepseek-ai/dsh-session',
+    manifest: 'packages/core/session/package.json', sourceEntry: 'packages/core/session/src/index.ts' },
+]
 
 export const evaluationEntryRegistry = new Map<EvaluationEntryId, EvaluationEntryDefinition>([
   ['advanced-journey', {
     commitment: 'advanced-journey', module: 'eval/run-advanced-journeys.ts',
-    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, referencedBy: [], visibility: 'public',
-    dependencies: ['eval/advanced-journey-configuration.ts', 'eval/advanced-journeys.ts', 'eval/journey-turn-runner.ts',
+    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
+    dynamicDependencyRoots: [launcherDependency('eval/run-advanced-journeys.ts'), ...journeyWorkspaceDependencies],
+    internalDependencies: ['eval/advanced-journey-configuration.ts', 'eval/advanced-journeys.ts', 'eval/journey-turn-runner.ts',
       'eval/run-advanced-journeys.ts', 'eval/overlays/journey.yml'],
   }],
   ['advanced-journey-repeat', {
     commitment: 'advanced-journey', module: 'eval/repeat-advanced-journeys.ts',
-    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, referencedBy: [], visibility: 'public',
-    dependencies: ['eval/advanced-journey-configuration.ts', 'eval/advanced-journeys.ts', 'eval/journey-turn-runner.ts',
+    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
+    dynamicDependencyRoots: [launcherDependency('eval/repeat-advanced-journeys.ts'), ...journeyWorkspaceDependencies],
+    internalDependencies: ['eval/advanced-journey-configuration.ts', 'eval/advanced-journeys.ts', 'eval/journey-turn-runner.ts',
       'eval/options.ts', 'eval/repeat-advanced-journeys.ts', 'eval/run-advanced-journeys.ts', 'eval/overlays/journey.yml'],
   }],
   ['comprehensive', {
     commitment: 'standard', module: 'eval/run-comprehensive.ts',
     parameters: { caseIds: true, options: noOptions }, environment: new Map([['MYTHOS_EVAL_SUITE', 'all']]),
-    referencedBy: [], visibility: 'public',
-    dependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run-comprehensive.ts', 'eval/run.ts'],
+    visibility: 'public', dynamicDependencyRoots: [launcherDependency('eval/run-comprehensive.ts')],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run-comprehensive.ts', 'eval/run.ts'],
   }],
   ['journey', {
     commitment: 'journey', module: 'eval/run-journeys.ts',
-    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, referencedBy: [], visibility: 'public',
-    dependencies: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts',
+    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
+    dynamicDependencyRoots: [launcherDependency('eval/run-journeys.ts'), ...journeyWorkspaceDependencies],
+    internalDependencies: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts',
       'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
   }],
   ['journey-repeat', {
     commitment: 'journey', module: 'eval/repeat-journeys.ts',
-    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, referencedBy: [], visibility: 'public',
-    dependencies: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts',
+    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
+    dynamicDependencyRoots: [launcherDependency('eval/repeat-journeys.ts'), ...journeyWorkspaceDependencies],
+    internalDependencies: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts',
       'eval/options.ts', 'eval/repeat-journeys.ts', 'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
   }],
   ['qwen-local', {
     commitment: 'qwen-local', module: 'eval/run-qwen-local.ts',
     parameters: { caseIds: true, options: noOptions }, environment: new Map([['MYTHOS_EVAL_SUITE', 'release']]),
-    referencedBy: [], visibility: 'public',
-    dependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run-qwen-local.ts', 'eval/run.ts', 'eval/overlays/qwen-local.yml'],
+    visibility: 'public', dynamicDependencyRoots: [launcherDependency('eval/run-qwen-local.ts')],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run-qwen-local.ts', 'eval/run.ts', 'eval/overlays/qwen-local.yml'],
   }],
   ['qwen-local-benchmark', {
     commitment: 'qwen-local', module: 'eval/qwen-local-benchmark.ts',
-    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, referencedBy: [], visibility: 'public',
-    dependencies: ['eval/qwen-local-benchmark.ts', 'eval/run-qwen-local.ts', 'eval/run.ts', 'eval/options.ts',
+    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
+    dynamicDependencyRoots: [launcherDependency('eval/qwen-local-benchmark.ts')],
+    internalDependencies: ['eval/qwen-local-benchmark.ts', 'eval/run-qwen-local.ts', 'eval/run.ts', 'eval/options.ts',
       'eval/cases.ts', 'eval/overlays/qwen-local.yml'],
   }],
   ['real-repository', {
     commitment: 'real-repository', module: 'eval/run-real-repo.ts',
-    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, referencedBy: [], visibility: 'public',
-    dependencies: ['eval/real-repo-cases.ts', 'eval/real-repo-configuration.ts', 'eval/run-real-repo.ts'],
+    parameters: { caseIds: false, options: noOptions }, environment: noEnvironment, visibility: 'public',
+    dynamicDependencyRoots: [launcherDependency('eval/run-real-repo.ts')],
+    internalDependencies: ['eval/real-repo-cases.ts', 'eval/real-repo-configuration.ts', 'eval/run-real-repo.ts'],
   }],
   ['repeat', {
     commitment: 'standard', module: 'eval/repeat.ts',
     parameters: { caseIds: true, options: new Map([['suite', ['all']]]) },
-    environment: new Map([['MYTHOS_EVAL_SUITE', 'release']]), referencedBy: [], visibility: 'public',
-    dependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/repeat.ts', 'eval/run-comprehensive.ts', 'eval/run.ts'],
+    environment: new Map([['MYTHOS_EVAL_SUITE', 'release']]), visibility: 'public',
+    dynamicDependencyRoots: [launcherDependency('eval/repeat.ts')],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/repeat.ts', 'eval/run-comprehensive.ts', 'eval/run.ts'],
   }],
   ['standard', {
     commitment: 'standard', module: 'eval/run.ts',
     parameters: { caseIds: true, options: noOptions }, environment: new Map([['MYTHOS_EVAL_SUITE', 'release']]),
-    referencedBy: [], visibility: 'public',
-    dependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts'],
+    visibility: 'public', dynamicDependencyRoots: [launcherDependency('eval/run.ts')],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts'],
   }],
 ])
 
@@ -125,6 +164,7 @@ export interface CanonicalPackageScript {
 
 const entryIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 const caseIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u
+const dependencyPathSegmentPattern = /^[a-zA-Z0-9._@-]+$/u
 
 const typecheckCommand = 'tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --types node eval/entry-registry.ts eval/import-closure.ts eval/launch.ts eval/run.ts eval/run-comprehensive.ts eval/run-journeys.ts eval/journeys.ts eval/journey-configuration.ts eval/journey-turn-runner.ts eval/repeat-journeys.ts eval/advanced-journeys.ts eval/advanced-journey-configuration.ts eval/run-advanced-journeys.ts eval/repeat-advanced-journeys.ts eval/real-repo-cases.ts eval/real-repo-configuration.ts eval/run-real-repo.ts eval/run-qwen-local.ts eval/qwen-local-benchmark.ts eval/repeat.ts eval/cases.ts eval/options.ts eval/session-metrics.ts flywheel/analysis.ts flywheel/analyze.ts flywheel/archive.ts flywheel/build.ts flywheel/comprehensive-gate.ts flywheel/journey-gate.ts flywheel/advanced-journey-gate.ts flywheel/real-repo-scope-gate.ts flywheel/gate-policy.ts flywheel/gate.ts flywheel/server-dataset.ts flywheel/server-import.ts flywheel/server-analyze.ts flywheel/server-gate.ts flywheel/session-curation.ts flywheel/session-curate.ts product/config.ts product/launch.ts product/smoke-web.ts release/check.ts release/pack.ts release/security.ts release/verify.ts'
 
@@ -164,7 +204,7 @@ export function parseEvaluationLaunchArguments(argv: readonly string[]): Evaluat
   const [rawEntryId, ...parameters] = argv
   if (rawEntryId === undefined || !entryIdPattern.test(rawEntryId)) throw new Error('未知或空评测 entry ID')
   const entry = evaluationEntryRegistry.get(rawEntryId as EvaluationEntryId)
-  if (entry === undefined) throw new Error('未知或空评测 entry ID')
+  if (entry === undefined || entry.visibility !== 'public') throw new Error('未知、空或不可启动的评测 entry ID')
   const entryId = rawEntryId as EvaluationEntryId
   const options = new Map<string, string>()
   const caseIds: string[] = []
@@ -206,15 +246,36 @@ export function validateEvaluationRegistry(
   }
   for (const [entryId, entry] of entries) {
     if (!entryIdPattern.test(entryId)) throw new Error(`entry ID 不符合规范：${entryId}`)
-    if (entry.visibility === 'public' && !references.has(entryId)) throw new Error(`公开 entry 没有 script invocation：${entryId}`)
-    if (entry.visibility === 'internal') {
-      if (entry.referencedBy.length === 0) throw new Error(`内部 entry 缺少固定引用：${entryId}`)
-      for (const owner of entry.referencedBy) {
-        if (entries.get(owner)?.visibility !== 'public') throw new Error(`内部 entry 引用了未知或非公开 owner：${entryId}`)
+    if (entry.visibility !== 'public') throw new Error(`禁止独立 internal entry：${entryId}`)
+    if (!references.has(entryId)) throw new Error(`公开 entry 没有 script invocation：${entryId}`)
+    if (entry.dynamicDependencyRoots.length === 0) throw new Error(`公开 entry 缺少 launcher 动态依赖：${entryId}`)
+    const rootKeys = new Set<string>()
+    let launcherRoots = 0
+    for (const root of entry.dynamicDependencyRoots) {
+      const paths = root.kind === 'file' ? [root.loader.path, root.root.path] : [root.loader.path, root.manifest, root.sourceEntry]
+      if (paths.some(path => path.split('/').some(segment => segment === '' || segment === '.' || segment === '..'
+        || !dependencyPathSegmentPattern.test(segment)))) {
+        throw new Error(`动态依赖路径不符合规范：${entryId}`)
       }
-    } else if (entry.referencedBy.length !== 0) {
-      throw new Error(`公开 entry 不得声明内部引用 owner：${entryId}`)
+      if (root.loader.scope === 'product' && root.loader.path !== 'eval/launch.ts'
+        && !entry.internalDependencies.includes(root.loader.path)) {
+        throw new Error(`动态依赖 loader 未由 public entry 反向引用：${entryId}`)
+      }
+      if (root.kind === 'workspace-package'
+        && (root.loader.scope !== 'product' || !/^@[a-z0-9-]+\/[a-z0-9-]+$/u.test(root.packageName))) {
+        throw new Error(`workspace package 动态依赖声明无效：${entryId}`)
+      }
+      const key = root.kind === 'file' ? `file:${root.root.scope}:${root.root.path}` : `package:${root.packageName}`
+      if (rootKeys.has(key)) throw new Error(`动态依赖 root 重复：${entryId}`)
+      rootKeys.add(key)
+      if (root.kind === 'file' && root.loader.scope === 'product' && root.loader.path === 'eval/launch.ts') {
+        launcherRoots += 1
+        if (root.root.scope !== 'product' || root.root.path !== entry.module) {
+          throw new Error(`launcher 动态 root 与 entry module 不一致：${entryId}`)
+        }
+      }
     }
+    if (launcherRoots !== 1) throw new Error(`public entry 必须且只能声明一个 launcher root：${entryId}`)
   }
 }
 
