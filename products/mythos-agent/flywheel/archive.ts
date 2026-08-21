@@ -3,6 +3,7 @@ import { createReadStream, constants } from 'node:fs'
 import { chmod, copyFile, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
 import { parseEvaluationReport } from '../eval/report-contract.js'
+import { readCompressedSessionMetrics } from '../eval/session-metrics.js'
 
 export interface ArchiveOptions {
   outputRoot: string
@@ -65,6 +66,18 @@ async function copyRawImmutable(source: string, destination: string): Promise<st
   return sourceSha256
 }
 
+function verifyV2RawMetrics(source: string, testCase: Record<string, unknown>): void {
+  const observed = readCompressedSessionMetrics(source)
+  const metrics = typeof testCase.metrics === 'object' && testCase.metrics !== null ? testCase.metrics as Record<string, unknown> : {}
+  const billing = typeof testCase.billing === 'object' && testCase.billing !== null ? testCase.billing as Record<string, unknown> : {}
+  const tokens = typeof billing.tokens === 'object' && billing.tokens !== null ? billing.tokens as Record<string, unknown> : {}
+  if (metrics.inputTokens !== observed.inputTokens || metrics.outputTokens !== observed.outputTokens
+    || metrics.cacheReadTokens !== observed.cacheReadTokens || metrics.turnReason !== observed.turnReason
+    || tokens.input !== observed.inputTokens || tokens.output !== observed.outputTokens || tokens.cache !== observed.cacheReadTokens) {
+    throw new Error('v2 评测报告与原始会话指标不一致')
+  }
+}
+
 export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveResult> {
   const productRoot = resolve(options.productRoot)
   const runsRoot = resolve(options.runsRoot)
@@ -91,6 +104,7 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
       let raw: { byteExact: true, sha256: string } | null = null
       if (testCase.rawSession !== undefined) {
         const source = await resolveRawSession(productRoot, sessionsRoot, trustedRoot, testCase.rawSession)
+        if (!legacy) verifyV2RawMetrics(source, testCase)
         raw = { byteExact: true, sha256: await copyRawImmutable(source, join(caseRoot, 'session.jsonl.zstd')) }
         rawSessions += 1
       }

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { archiveFlywheel, type ArchiveOptions } from './archive.js'
+import { evaluateReleaseGate, readArchivedLabels } from './gate-policy.js'
 
 const temporaryRoots: string[] = []
 
@@ -100,5 +101,51 @@ describe('archiveFlywheel', () => {
     const options = await fixture()
     await writeFile(join(options.runsRoot, 'run.json'), JSON.stringify({ cases: [], reportVersion: 2, runId: 'run-1' }))
     await expect(archiveFlywheel(options)).rejects.toThrow('schema')
+  })
+
+  it.each(['accepted', 'evidence', 'source-summary'] as const)('篡改 %s 的三个完整 v2 报告无法通过 archive→analysis→gate', async attack => {
+    const options = await fixture()
+    const source = join(options.sessionsRoot, 'case', 'session.jsonl.zstd')
+    await mkdir(join(options.sessionsRoot, 'case'))
+    await writeFile(source, 'raw-session-evidence')
+    const testCase: Record<string, unknown> = {
+      accepted: false,
+      billing: { amount: null, currency: null, source: null, tokens: { cache: 0, input: 1, output: 1 }, tokensVerified: true, verified: false },
+      capabilityEligible: false,
+      completionEvidence: {
+        agentIdle: { status: 'unknown_unverified', value: null }, externalVerifier: { status: 'observed', value: true },
+        sessionFlush: { status: 'unknown_unverified', value: null }, turnReason: { status: 'observed', value: 'completed' },
+      },
+      failure: { category: 'harness_failure', reason: 'observability_gap' },
+      id: 'case', observationSource: 'dsh_session_log', passed: true, rawSession: relative(options.productRoot, source),
+    }
+    const report: Record<string, unknown> = {
+      acceptance: { failures: ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete', 'tracked_source_dirty'], passed: false },
+      baseline: { configurationSha256: 'c', dshVersion: 'd', mythosVersion: 'm', variant: 'v' },
+      cases: [testCase], implementation: { entry: 'standard', files: [], runtime: { endpoint: { sha256: 'endpoint' }, parametersSha256: 'parameters' }, sha256: 'hash' },
+      modelIdentity: { server: { status: 'unknown_unverified' } }, passed: false, reportVersion: 2, runId: `run-${attack}`,
+      source: { gitHead: 'head', worktree: { trackedDirty: true, untrackedPresent: false } },
+    }
+    if (attack === 'accepted') testCase.accepted = true
+    if (attack === 'evidence') {
+      testCase.billing = { amount: 0, currency: 'USD', source: 'provider_invoice', tokens: { cache: 0, input: 1, output: 1 }, tokensVerified: true, verified: true }
+      testCase.completionEvidence = { agentIdle: { status: 'observed', value: true }, sessionFlush: { status: 'observed', value: true }, turnReason: { status: 'observed', value: 'completed' } }
+      report.modelIdentity = { server: { status: 'verified', model: 'forged' } }
+    }
+    if (attack === 'source-summary') {
+      report.source = { gitHead: 'head', worktree: { trackedDirty: false, untrackedPresent: false } }
+      report.acceptance = { failures: ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete'], passed: false }
+      report.summary = { passRate: 1, samples: 999 }
+    }
+    await writeFile(join(options.runsRoot, `${attack}.json`), JSON.stringify(report))
+    let passed = false
+    try {
+      await archiveFlywheel(options)
+      const labels = await readArchivedLabels(options.outputRoot)
+      passed = evaluateReleaseGate(labels, { caseIds: ['case'], cohortPrefix: 'd:m:c:v', maxDurationMsP95: 100, minSamples: 1 }).passed
+    } catch {
+      passed = false
+    }
+    expect(passed).toBe(false)
   })
 })

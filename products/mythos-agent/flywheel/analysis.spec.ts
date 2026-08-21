@@ -15,8 +15,8 @@ describe('flywheel analysis', () => {
       { case: { accepted: false, durationMs: 30, failure: { category: 'model_failure' }, metrics: { cacheReadTokens: 5, evidenceAfterMutation: false, failedToolResults: 0, inputTokens: 20, mutationCalls: 1, outputTokens: 4, steps: 3, toolCalls: { read: 2, write: 1 } }, passed: false, timedOut: true }, raw: null, reportVersion: 2 },
     ])).toEqual({
       cacheReadTokensMean: 4,
-      capabilityPassRate: 0.5,
-      capabilitySamples: 2,
+      capabilityPassRate: 0,
+      capabilitySamples: 0,
       compactionSummariesMean: 0,
       durationMsP50: 10,
       durationMsP95: 30,
@@ -27,7 +27,7 @@ describe('flywheel analysis', () => {
       mutationCallsMean: 1,
       maxSubagentCallsPerStepMean: 0,
       outputTokensMean: 3,
-      passRate: 0.5,
+      passRate: 0,
       rawCoverage: 0.5,
       resumeBoundariesMean: 0,
       samples: 2,
@@ -45,6 +45,6 @@ describe('flywheel analysis', () => {
       { case: { accepted: false, failure: { category: 'harness_failure' }, passed: false }, raw: {}, reportVersion: 2 },
       { case: { accepted: false, failure: { category: 'infrastructure_failure' }, passed: false }, raw: {}, reportVersion: 2 },
     ])
-    expect(summary).toMatchObject({ capabilityPassRate: 0.5, capabilitySamples: 2, passRate: 0 })
+    expect(summary).toMatchObject({ capabilityPassRate: 0, capabilitySamples: 0, passRate: 0 })
   })
 })

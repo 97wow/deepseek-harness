@@ -1,4 +1,6 @@
-import type { CohortSummary } from './analysis.js'
+import { readFile } from 'node:fs/promises'
+import { resolve, sep } from 'node:path'
+import { summarizeByCohort } from './analysis.js'
 
 export interface GateCriteria {
   caseIds: readonly string[]
@@ -18,9 +20,10 @@ export interface GateResult {
 }
 
 export function evaluateReleaseGate(
-  cohorts: Readonly<Record<string, CohortSummary>>,
+  labels: readonly Record<string, unknown>[],
   criteria: GateCriteria,
 ): GateResult {
+  const cohorts = summarizeByCohort(labels)
   const failures: string[] = []
   for (const caseId of criteria.caseIds) {
     const summary = cohorts[`${criteria.cohortPrefix}:${caseId}`]
@@ -58,4 +61,16 @@ export function evaluateReleaseGate(
     }
   }
   return { failures, passed: failures.length === 0 }
+}
+
+export async function readArchivedLabels(dataRoot: string): Promise<Record<string, unknown>[]> {
+  const root = resolve(dataRoot)
+  const index = (await readFile(resolve(root, 'index.jsonl'), 'utf8'))
+    .split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
+  return await Promise.all(index.map(async row => {
+    if (typeof row.label !== 'string') throw new Error('飞轮索引缺少 label 路径')
+    const path = resolve(root, row.label)
+    if (!path.startsWith(`${root}${sep}`)) throw new Error('飞轮 label 路径越界')
+    return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
+  }))
 }

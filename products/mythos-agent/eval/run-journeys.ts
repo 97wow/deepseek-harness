@@ -109,7 +109,7 @@ for (const testCase of journeyCases) {
 const dsh = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')) as { version: string }
 const mythos = JSON.parse(await readFile(join(productRoot, 'package.json'), 'utf8')) as { version: string }
 const draft = {
-  baseline: { configurationSha256: await journeyConfigurationSha256(productRoot), dshVersion: dsh.version, endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, mythosVersion: mythos.version, suite: 'journey', timeoutMs, variant: 'default' },
+  baseline: { configurationSha256: await journeyConfigurationSha256(productRoot), dshVersion: dsh.version, mythosVersion: mythos.version, suite: 'journey', timeoutMs, variant: 'default' },
   cases,
   completedAt: new Date().toISOString(),
   model: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',
@@ -121,7 +121,9 @@ const draft = {
 }
 const report = await buildEvaluationReport({
   cases,
-  config: { endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, suite: 'journey', timeoutMs, variant: 'default' },
+  config: { caseIds: journeyCases.map(testCase => testCase.id), endpoint: process.env.DEEPSEEK_BASE_URL,
+    profile: 'mythos', repetition: process.env.MYTHOS_EVAL_REPLAY_ITERATION ?? null,
+    repetitions: process.env.MYTHOS_EVAL_REPLAY_TOTAL ?? null, suite: 'journey', timeoutMs, variant: 'default' },
   draft,
   entry: 'journey',
   productRoot,

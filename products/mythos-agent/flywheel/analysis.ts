@@ -64,11 +64,10 @@ export function summarizeCohort(labels: readonly Record<string, unknown>[]): Coh
   for (const label of labels) {
     const testCase = record(label.case)
     const metrics = record(testCase.metrics)
-    const failure = record(testCase.failure)
     const isV2 = label.reportVersion === 2 && typeof testCase.accepted === 'boolean'
-    if (isV2 && testCase.accepted === true) passed += 1
-    const scoreable = isV2 && (failure.category === 'model_failure'
-      || (failure.category === null && testCase.passed === true))
+    const semantics = authoritativeCaseSemantics(testCase)
+    if (isV2 && semantics.accepted) passed += 1
+    const scoreable = isV2 && semantics.capabilityEligible
     if (scoreable) {
       capabilitySamples += 1
       if (testCase.passed === true) capabilityPassed += 1
@@ -148,3 +147,4 @@ export function summarizeByCohort(
       .map(([key, group]) => [key, summarizeCohort(group)]),
   )
 }
+import { authoritativeCaseSemantics } from '../eval/report-contract.js'

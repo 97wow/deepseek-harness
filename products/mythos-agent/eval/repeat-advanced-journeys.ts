@@ -9,7 +9,9 @@ let failures = 0
 for (let iteration = 1; iteration <= repetitions; iteration += 1) {
   process.stdout.write(`\n[Mythos Advanced Journey Replay] ${iteration}/${repetitions}\n`)
   const exitCode = await new Promise<number>((resolve, reject) => {
-    const child = spawn(process.execPath, ['--import', 'tsx/esm', join(evalRoot, 'run-advanced-journeys.ts')], { env: process.env, stdio: 'inherit' })
+    const child = spawn(process.execPath, ['--import', 'tsx/esm', join(evalRoot, 'run-advanced-journeys.ts')], {
+      env: { ...process.env, MYTHOS_EVAL_REPLAY_ITERATION: String(iteration), MYTHOS_EVAL_REPLAY_TOTAL: String(repetitions) }, stdio: 'inherit',
+    })
     child.once('error', reject)
     child.once('exit', code => resolve(code ?? 1))
   })

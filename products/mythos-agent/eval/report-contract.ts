@@ -12,6 +12,7 @@ const knownOverlays = new Set([
   'eval/overlays/qwen-local.yml', 'eval/overlays/reasoning-high.yml', 'eval/overlays/real-repo-scope-guard.yml',
 ])
 const knownTurnReasons = new Set(['aborted', 'blocked', 'completed', 'error', 'interrupted', 'max-tokens'])
+const supportedCurrencies = new Set(['USD'])
 
 export type EvaluationEntry = 'advanced-journey' | 'journey' | 'qwen-local' | 'real-repository' | 'standard'
 export type FailureCategory = 'model_failure' | 'harness_failure' | 'infrastructure_failure'
@@ -24,12 +25,24 @@ const commonFiles = [
 const entryFiles: Readonly<Record<EvaluationEntry, readonly string[]>> = {
   'advanced-journey': [
     'eval/advanced-journey-configuration.ts', 'eval/advanced-journeys.ts', 'eval/journey-turn-runner.ts',
-    'eval/run-advanced-journeys.ts', 'eval/overlays/journey.yml',
+    'eval/repeat-advanced-journeys.ts', 'eval/run-advanced-journeys.ts', 'eval/overlays/journey.yml',
   ],
-  journey: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts', 'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
-  'qwen-local': ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/run-qwen-local.ts', 'eval/overlays/qwen-local.yml'],
+  journey: ['eval/journey-configuration.ts', 'eval/journey-turn-runner.ts', 'eval/journeys.ts', 'eval/repeat-journeys.ts', 'eval/run-journeys.ts', 'eval/overlays/journey.yml'],
+  'qwen-local': ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/run-qwen-local.ts', 'eval/repeat.ts', 'eval/overlays/qwen-local.yml'],
   'real-repository': ['eval/real-repo-cases.ts', 'eval/real-repo-configuration.ts', 'eval/run-real-repo.ts'],
-  standard: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts'],
+  standard: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/run-comprehensive.ts', 'eval/repeat.ts'],
+}
+
+export const evaluationEntrypoints: Readonly<Record<string, EvaluationEntry>> = {
+  'repeat-advanced-journeys.ts': 'advanced-journey',
+  'repeat-journeys.ts': 'journey',
+  'repeat.ts': 'standard',
+  'run-advanced-journeys.ts': 'advanced-journey',
+  'run-comprehensive.ts': 'standard',
+  'run-journeys.ts': 'journey',
+  'run-qwen-local.ts': 'qwen-local',
+  'run-real-repo.ts': 'real-repository',
+  'run.ts': 'standard',
 }
 
 export interface ReportCase {
@@ -66,6 +79,11 @@ function canonical(value: unknown): string {
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const keys = new Set(allowed)
+  return Object.keys(value).every(key => keys.has(key))
 }
 
 function nonNegativeInteger(value: unknown): number | null {
@@ -108,7 +126,17 @@ export function implementationFiles(entry: EvaluationEntry, overlays: readonly s
   for (const overlay of overlays) {
     if (!knownOverlays.has(overlay)) throw new Error('评测 overlay 不在中央已知集合')
   }
-  return [...new Set([...commonFiles, ...entryFiles[entry], ...overlays])].sort()
+  const registered = Object.entries(evaluationEntrypoints)
+    .filter(([, registeredEntry]) => registeredEntry === entry)
+    .map(([filename]) => `eval/${filename}`)
+  return [...new Set([...commonFiles, ...entryFiles[entry], ...registered, ...overlays])].sort()
+}
+
+export function endpointCommitment(value: unknown): { algorithm: 'sha256'; sha256: string } {
+  if (typeof value !== 'string') throw new Error('评测 endpoint 缺失')
+  const endpoint = new URL(value)
+  if (endpoint.username !== '' || endpoint.password !== '') throw new Error('评测 endpoint 禁止 userinfo 凭据')
+  return { algorithm: 'sha256', sha256: createHash('sha256').update(endpoint.href).digest('hex') }
 }
 
 export async function evaluationCommitment(input: {
@@ -116,16 +144,25 @@ export async function evaluationCommitment(input: {
   entry: EvaluationEntry
   overlays?: readonly string[]
   productRoot: string
-}): Promise<{ algorithm: 'sha256-v2'; files: { path: string; sha256: string }[]; sha256: string }> {
+}): Promise<{
+  algorithm: 'sha256-v2'
+  entry: EvaluationEntry
+  files: { path: string; sha256: string }[]
+  runtime: { endpoint: { algorithm: 'sha256'; sha256: string }; parametersSha256: string }
+  sha256: string
+}> {
   const root = resolve(input.productRoot)
+  const { endpoint, ...parameters } = input.config
+  const endpointDigest = endpointCommitment(endpoint)
   const paths = implementationFiles(input.entry, input.overlays).map(path => resolve(root, path))
   const files = await Promise.all(paths.map(async path => {
     if (!path.startsWith(`${root}${sep}`)) throw new Error('评测 commitment 文件越出产品目录')
     return { path: relative(root, path).replaceAll(sep, '/'), sha256: createHash('sha256').update(await readFile(path)).digest('hex') }
   }))
   return {
-    algorithm: 'sha256-v2', files,
-    sha256: createHash('sha256').update(canonical({ config: input.config, entry: input.entry, files })).digest('hex'),
+    algorithm: 'sha256-v2', entry: input.entry, files,
+    runtime: { endpoint: endpointDigest, parametersSha256: createHash('sha256').update(canonical(parameters)).digest('hex') },
+    sha256: createHash('sha256').update(canonical({ endpoint: endpointDigest, entry: input.entry, files, parameters })).digest('hex'),
   }
 }
 
@@ -166,7 +203,7 @@ export function validateBilling(value: unknown, trustedSource = false): {
   const billing = record(value)
   const rawAmount = finiteNumber(billing.amount)
   const amount = rawAmount !== null && rawAmount >= 0 ? rawAmount : null
-  const currency = typeof billing.currency === 'string' && /^[A-Z]{3}$/u.test(billing.currency) ? billing.currency : null
+  const currency = typeof billing.currency === 'string' && supportedCurrencies.has(billing.currency) ? billing.currency : null
   const source = billing.source === 'provider_invoice' || billing.source === 'provider_signed_usage' ? billing.source : null
   return { amount, currency, source, verified: trustedSource && amount !== null && currency !== null && source !== null && billing.verified === true }
 }
@@ -196,8 +233,7 @@ function projectCase(testCase: ReportCase): Record<string, unknown> {
   const billing = validateBilling(testCase.billing)
   const rawSession = typeof testCase.rawSession === 'string' && safeSessionPath.test(testCase.rawSession) ? testCase.rawSession : undefined
   const relatedRawSessions = testCase.relatedRawSessions?.filter(path => safeSessionPath.test(path))
-  return {
-    accepted: false,
+  const raw = {
     billing: { ...billing, tokens: { cache: tokens.cache, input: tokens.input, output: tokens.output }, tokensVerified: tokens.verified },
     completionEvidence: {
       agentIdle: { status: testCase.agentIdleObserved === true ? 'observed' : 'unknown_unverified', value: testCase.agentIdleObserved === true ? true : null },
@@ -205,12 +241,32 @@ function projectCase(testCase: ReportCase): Record<string, unknown> {
       sessionFlush: { status: testCase.sessionFlushObserved === true ? 'observed' : 'unknown_unverified', value: testCase.sessionFlushObserved === true ? true : null },
       turnReason: metrics?.turnReason ? { status: 'observed', value: metrics.turnReason } : { status: 'unknown_unverified', value: null },
     },
-    durationMs: nonNegativeInteger(testCase.durationMs), failure: classifyFailure(testCase),
+    durationMs: nonNegativeInteger(testCase.durationMs),
     id: safeString(testCase.id) ?? 'invalid-case-id', metrics, passed: testCase.passed === true,
+    observationSource: testCase.metricsSource === 'dsh_session_log' ? 'dsh_session_log' : 'unknown_unverified',
     processExitCode: nonNegativeInteger(testCase.processExitCode), ...(rawSession ? { rawSession } : {}),
     ...(relatedRawSessions?.length ? { relatedRawSessions } : {}), timedOut: testCase.timedOut === true,
     tier: safeString(testCase.tier), verification: { passed: typeof testCase.verification?.passed === 'boolean' ? testCase.verification.passed : null },
   }
+  return { ...raw, ...authoritativeCaseSemantics(raw) }
+}
+
+export function authoritativeCaseSemantics(_testCase: Record<string, unknown>): {
+  accepted: false
+  capabilityEligible: false
+  failure: { category: 'harness_failure'; reason: 'observability_gap' }
+} {
+  return { accepted: false, capabilityEligible: false, failure: { category: 'harness_failure', reason: 'observability_gap' } }
+}
+
+function authoritativeReportFailures(cases: readonly Record<string, unknown>[], source: Record<string, unknown>): string[] {
+  const failures = ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete']
+  if (cases.length === 0) failures.push('zero_cases')
+  if (cases.some(testCase => testCase.passed !== true)) failures.push('case_failure')
+  const worktree = record(source.worktree)
+  if (worktree.trackedDirty === true) failures.push('tracked_source_dirty')
+  if (worktree.untrackedPresent === true) failures.push('untracked_source_present')
+  return failures
 }
 
 function projectDraft(draft: object): Record<string, unknown> {
@@ -248,11 +304,7 @@ export async function buildEvaluationReport(input: {
       entry: input.entry, overlays: input.overlays, productRoot: input.productRoot }),
   ])
   const cases = input.cases.map(projectCase)
-  const failures = ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete']
-  if (cases.length === 0) failures.push('zero_cases')
-  if (cases.some(testCase => testCase.passed !== true)) failures.push('case_failure')
-  if (source.worktree.trackedDirty) failures.push('tracked_source_dirty')
-  if (source.worktree.untrackedPresent) failures.push('untracked_source_present')
+  const failures = authoritativeReportFailures(cases, source)
   return {
     ...projectDraft(input.draft), acceptance: { failures, passed: false }, cases, implementation,
     modelIdentity: { requested: { model: safeString(input.requestedModel), provider: safeString(input.requestedProvider) },
@@ -270,12 +322,16 @@ export function parseEvaluationReport(value: unknown): Record<string, unknown> {
   if (report.reportVersion === 2) {
     const acceptance = record(report.acceptance)
     const implementation = record(report.implementation)
+    const runtime = record(implementation.runtime)
     const identity = record(report.modelIdentity)
     const source = record(report.source)
     const worktree = record(source.worktree)
-    if (typeof acceptance.passed !== 'boolean' || !Array.isArray(acceptance.failures)
+    if (!hasOnlyKeys(report, ['acceptance', 'baseline', 'cases', 'completedAt', 'implementation', 'modelIdentity', 'passed', 'profile', 'replay', 'reportVersion', 'runId', 'source', 'startedAt'])
+      || typeof acceptance.passed !== 'boolean' || !Array.isArray(acceptance.failures)
       || typeof report.passed !== 'boolean' || typeof report.runId !== 'string'
       || typeof implementation.sha256 !== 'string' || !Array.isArray(implementation.files)
+      || !entriesInclude(implementation.entry) || typeof record(runtime.endpoint).sha256 !== 'string'
+      || typeof runtime.parametersSha256 !== 'string'
       || typeof record(identity.server).status !== 'string' || typeof source.gitHead !== 'string'
       || typeof worktree.trackedDirty !== 'boolean' || typeof worktree.untrackedPresent !== 'boolean') {
       throw new Error('v2 评测报告顶层 schema 无效')
@@ -284,12 +340,32 @@ export function parseEvaluationReport(value: unknown): Record<string, unknown> {
       const testCase = record(item)
       const failure = record(testCase.failure)
       const billing = record(testCase.billing)
-      if (typeof testCase.id !== 'string' || typeof testCase.passed !== 'boolean' || typeof testCase.accepted !== 'boolean'
+      const completion = record(testCase.completionEvidence)
+      const tokenValues = record(billing.tokens)
+      const expectedTokensVerified = testCase.observationSource === 'dsh_session_log'
+        && [tokenValues.cache, tokenValues.input, tokenValues.output].every(value => nonNegativeInteger(value) !== null)
+      if (!hasOnlyKeys(testCase, ['accepted', 'billing', 'capabilityEligible', 'completionEvidence', 'durationMs', 'failure', 'id', 'metrics',
+        'observationSource', 'passed', 'processExitCode', 'rawSession', 'relatedRawSessions', 'tier', 'timedOut', 'verification'])
+        || typeof testCase.id !== 'string' || typeof testCase.passed !== 'boolean' || typeof testCase.accepted !== 'boolean'
         || !['model_failure', 'harness_failure', 'infrastructure_failure', null].includes(failure.category as never)
-        || typeof billing.verified !== 'boolean' || typeof record(testCase.completionEvidence).turnReason !== 'object') {
+        || billing.verified !== false || billing.tokensVerified !== expectedTokensVerified
+        || typeof completion.turnReason !== 'object'
+        || record(completion.agentIdle).status !== 'unknown_unverified'
+        || record(completion.sessionFlush).status !== 'unknown_unverified') {
         throw new Error('v2 评测报告 case schema 无效')
       }
+      const expected = authoritativeCaseSemantics(testCase)
+      if (testCase.accepted !== expected.accepted || testCase.capabilityEligible !== expected.capabilityEligible
+        || canonical(testCase.failure) !== canonical(expected.failure)) throw new Error('v2 评测报告 case 派生语义不一致')
     }
+    const expectedFailures = authoritativeReportFailures(report.cases.map(record), source)
+    if (record(identity.server).status !== 'unknown_unverified' || acceptance.passed !== false || report.passed !== false
+      || canonical(acceptance.failures) !== canonical(expectedFailures)) throw new Error('v2 评测报告 acceptance 派生语义不一致')
   }
   return report
+}
+
+function entriesInclude(value: unknown): value is EvaluationEntry {
+  return value === 'advanced-journey' || value === 'journey' || value === 'qwen-local'
+    || value === 'real-repository' || value === 'standard'
 }

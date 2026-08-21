@@ -130,14 +130,14 @@ for (const testCase of chosen) {
 const dsh = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')) as { version: string }
 const mythos = JSON.parse(await readFile(join(productRoot, 'package.json'), 'utf8')) as { version: string }
 const draft = { baseline: { configurationSha256: await realRepoConfigurationSha256(productRoot, evalPatch), dshVersion: dsh.version,
-  endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, mythosVersion: mythos.version, suite: 'real-repository', timeoutMs,
+  mythosVersion: mythos.version, suite: 'real-repository', timeoutMs,
   variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
   cases, completedAt: new Date().toISOString(), model: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash', passed: cases.every(item => item.passed),
   profile: 'mythos', reportVersion: 1, runId: randomUUID(), startedAt }
 const report = await buildEvaluationReport({
   cases,
-  config: { endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, selected: selected ?? null,
-    suite: 'real-repository', timeoutMs, variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
+  config: { caseIds: chosen.map(testCase => testCase.id), endpoint: process.env.DEEPSEEK_BASE_URL,
+    profile: 'mythos', suite: 'real-repository', timeoutMs, variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
   draft,
   entry: 'real-repository',
   overlays: evalPatch ? [relative(productRoot, evalPatch)] : [],

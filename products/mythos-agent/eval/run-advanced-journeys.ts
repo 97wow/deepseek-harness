@@ -114,15 +114,16 @@ const dsh = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')) a
 const mythos = JSON.parse(await readFile(join(productRoot, 'package.json'), 'utf8')) as { version: string }
 const draft = {
   baseline: { configurationSha256: await advancedJourneyConfigurationSha256(productRoot), dshVersion: dsh.version,
-    endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, mythosVersion: mythos.version, suite: 'advanced-journey', timeoutMs, variant: 'default' },
+    mythosVersion: mythos.version, suite: 'advanced-journey', timeoutMs, variant: 'default' },
   cases, completedAt: new Date().toISOString(), model: process.env.MYTHOS_EVAL_MODEL ?? 'deepseek-v4-flash',
   passed: cases.every(testCase => testCase.passed), profile: 'mythos', reportVersion: 1, runId: randomUUID(), startedAt,
 }
 const advancedOverlays = [...new Set(chosenCases.map(testCase => `eval/overlays/journey-${testCase.overlay}.yml`))]
 const report = await buildEvaluationReport({
   cases,
-  config: { endpoint: new URL(process.env.DEEPSEEK_BASE_URL).origin, selected: selected ?? null,
-    suite: 'advanced-journey', timeoutMs, variant: 'default' },
+  config: { caseIds: chosenCases.map(testCase => testCase.id), endpoint: process.env.DEEPSEEK_BASE_URL,
+    profile: 'mythos', repetition: process.env.MYTHOS_EVAL_REPLAY_ITERATION ?? null,
+    repetitions: process.env.MYTHOS_EVAL_REPLAY_TOTAL ?? null, suite: 'advanced-journey', timeoutMs, variant: 'default' },
   draft,
   entry: 'advanced-journey',
   overlays: advancedOverlays,

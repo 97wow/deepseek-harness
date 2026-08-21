@@ -1,13 +1,16 @@
 import { execFile } from 'node:child_process'
 import { dirname, join } from 'node:path'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   buildEvaluationReport,
   classifyFailure,
+  endpointCommitment,
   evaluationCommitment,
+  evaluationEntrypoints,
   implementationFiles,
   parseEvaluationReport,
   sourceEvidence,
@@ -90,13 +93,40 @@ describe('M3 + DSH 评测证据报告', () => {
   it.each(entries)('%s 的每个中央关键文件变更都会改变 commitment', async entry => {
     const { productRoot } = await fixture()
     const overlays = entry === 'advanced-journey' ? ['eval/overlays/journey-subagent.yml'] : []
-    let previous = await evaluationCommitment({ config: { timeoutMs: 1 }, entry, overlays, productRoot })
+    let previous = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 }, entry, overlays, productRoot })
     for (const file of implementationFiles(entry, overlays)) {
       await writeFile(join(productRoot, file), `${file}:changed:${previous.sha256}\n`)
-      const next = await evaluationCommitment({ config: { timeoutMs: 1 }, entry, overlays, productRoot })
+      const next = await evaluationCommitment({ config: { endpoint: 'https://example.invalid/v1', timeoutMs: 1 }, entry, overlays, productRoot })
       expect(next.sha256, file).not.toBe(previous.sha256)
       previous = next
     }
+  })
+
+  it('公开 runner 命名集合与中央入口注册表完全一致', async () => {
+    const files = (await readdir(dirname(fileURLToPath(import.meta.url))))
+      .filter(name => /^(?:run|repeat)(?:-[a-z]+)*\.ts$/u.test(name)).sort()
+    expect(Object.keys(evaluationEntrypoints).sort()).toEqual(files)
+  })
+
+  it('endpoint commitment 对完整 URL 语义敏感并拒绝 userinfo', () => {
+    const values = [
+      'https://example.invalid:8443/v1?a=secret#route', 'http://example.invalid:8443/v1?a=secret#route',
+      'https://other.invalid:8443/v1?a=secret#route', 'https://example.invalid:9443/v1?a=secret#route',
+      'https://example.invalid:8443/v2?a=secret#route', 'https://example.invalid:8443/v1?a=other#route',
+      'https://example.invalid:8443/v1?a=secret#other',
+    ]
+    expect(new Set(values.map(value => endpointCommitment(value).sha256)).size).toBe(values.length)
+    expect(() => endpointCommitment('https://user:password@example.invalid/v1')).toThrow('userinfo')
+  })
+
+  it('case selection 与运行参数变化改变 runtime commitment', async () => {
+    const { productRoot } = await fixture()
+    const first = await evaluationCommitment({ config: { caseIds: ['a'], endpoint: 'https://example.invalid/v1', profile: 'mythos', repeat: 1,
+      timeoutMs: 1, variant: 'a' }, entry: 'standard', productRoot })
+    const second = await evaluationCommitment({ config: { caseIds: ['b'], endpoint: 'https://example.invalid/v1', profile: 'mythos', repeat: 2,
+      timeoutMs: 2, variant: 'b' }, entry: 'standard', productRoot })
+    expect(second.sha256).not.toBe(first.sha256)
+    expect(JSON.stringify(second)).not.toContain('example.invalid')
   })
 
   it('unknown 服务端身份使正式接受 fail closed', async () => {
@@ -140,6 +170,7 @@ describe('M3 + DSH 评测证据报告', () => {
     { amount: Number.POSITIVE_INFINITY, currency: 'USD', source: 'provider_invoice', verified: true },
     { amount: -1, currency: 'USD', source: 'provider_invoice', verified: true },
     { amount: 1, currency: 'usd', source: 'provider_invoice', verified: true },
+    { amount: 1, currency: 'ZZZ', source: 'provider_invoice', verified: true },
     { amount: 1, currency: 'USD', source: 'environment_label', verified: true },
     { amount: 1, currency: 'USD', source: 'provider_invoice', verified: false },
   ])('非法或不可信费用证据被独立拒绝', billing => {
@@ -170,7 +201,8 @@ describe('M3 + DSH 评测证据报告', () => {
   it('v1 可解析但 v2 schema 必须显式合法', () => {
     expect(parseEvaluationReport({ cases: [], reportVersion: 1 }).reportVersion).toBe(1)
     expect(parseEvaluationReport({
-      acceptance: { failures: [], passed: false }, cases: [], implementation: { files: [], sha256: 'hash' },
+      acceptance: { failures: ['server_identity_unverified', 'billing_unverified', 'completion_evidence_incomplete', 'zero_cases'], passed: false },
+      cases: [], implementation: { entry: 'standard', files: [], runtime: { endpoint: { sha256: 'endpoint' }, parametersSha256: 'parameters' }, sha256: 'hash' },
       modelIdentity: { server: { status: 'unknown_unverified' } }, passed: false, reportVersion: 2, runId: 'run-1',
       source: { gitHead: 'head', worktree: { trackedDirty: false, untrackedPresent: false } },
     }).reportVersion).toBe(2)

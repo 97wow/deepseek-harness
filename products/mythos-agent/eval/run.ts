@@ -29,7 +29,6 @@ interface EvaluationReport {
   baseline: {
     configurationSha256: string
     dshVersion: string
-    endpoint: string
     mythosVersion: string
     overlaySha256?: string
     suite: string
@@ -91,15 +90,6 @@ async function configurationSha256(overlay?: string): Promise<string> {
 
 async function fileSha256(path: string): Promise<string> {
   return createHash('sha256').update(await readFile(path)).digest('hex')
-}
-
-function safeEndpoint(raw: string): string {
-  const url = new URL(raw)
-  url.username = ''
-  url.password = ''
-  url.search = ''
-  url.hash = ''
-  return url.toString().replace(/\/$/, '')
 }
 
 async function collectSessionFiles(root: string): Promise<Set<string>> {
@@ -299,7 +289,6 @@ async function main(): Promise<void> {
     baseline: {
       configurationSha256: configHash,
       dshVersion: String(dshManifest.version),
-      endpoint: safeEndpoint(process.env.DEEPSEEK_BASE_URL),
       mythosVersion: String(mythosManifest.version),
       ...(evalPatch ? { overlaySha256: await fileSha256(evalPatch) } : {}),
       suite: evaluationSuite,
@@ -319,8 +308,9 @@ async function main(): Promise<void> {
   }
   const report = await buildEvaluationReport({
     cases: results,
-    config: { endpoint: safeEndpoint(process.env.DEEPSEEK_BASE_URL), suite: evaluationSuite,
-      timeoutMs: evaluationTimeoutMs, variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
+    config: { caseIds: selectedCases.map(testCase => testCase.id), endpoint: process.env.DEEPSEEK_BASE_URL,
+      profile: 'mythos', replay: replay ?? null, suite: evaluationSuite, timeoutMs: evaluationTimeoutMs,
+      variant: process.env.MYTHOS_EVAL_VARIANT ?? 'default' },
     draft,
     entry: process.env.MYTHOS_EVAL_ENTRY === 'qwen-local' ? 'qwen-local' : 'standard',
     overlays: evalPatch ? [relative(productRoot, evalPatch)] : [],
