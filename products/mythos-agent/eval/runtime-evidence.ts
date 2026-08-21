@@ -49,6 +49,7 @@ function responseBilling(value: unknown): ProviderResponseObservation['billing']
   const response = record(value)
   const billing = record(response.billing)
   const amount = typeof billing.amount === 'number' && Number.isFinite(billing.amount) && billing.amount >= 0
+    && !Object.is(billing.amount, -0)
     ? billing.amount
     : null
   const currency = typeof billing.currency === 'string' && supportedCurrencies.has(billing.currency)
@@ -123,7 +124,9 @@ export function aggregateProviderEvidence(observations: readonly ProviderRespons
     ? identities[0]!
     : null
   const billings = observations.map(item => item.billing)
-  if (billings.some(item => item === null)) return { billing: null, identity }
+  if (billings.some(item => item === null || !Number.isFinite(item.amount) || item.amount < 0 || Object.is(item.amount, -0))) {
+    return { billing: null, identity }
+  }
   const first = billings[0]!
   if (!billings.every(item => item!.currency === first.currency && item!.source === first.source)) {
     return { billing: null, identity }

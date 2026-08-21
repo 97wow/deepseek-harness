@@ -91,6 +91,15 @@ function reportCommitment(report: Record<string, unknown>): Record<string, unkno
   }
 }
 
+function parseArchivableReport(content: string): Record<string, unknown> {
+  const report = parseEvaluationReport(JSON.parse(content))
+  const failures = object(report.acceptance).failures
+  if (Array.isArray(failures) && failures.includes('trusted_attestation_invalid')) {
+    throw new Error('评测报告 schema 无效')
+  }
+  return report
+}
+
 async function resolveRawSession(productRoot: string, sessionsRoot: string, trustedRoot: string, value: unknown): Promise<string> {
   if (typeof value !== 'string') throw new Error('评测记录的 rawSession 必须是字符串')
   const lexicalPath = resolve(productRoot, value)
@@ -159,7 +168,7 @@ export async function archiveFlywheel(options: ArchiveOptions): Promise<ArchiveR
 
   for (const filename of filenames) {
     const reportContent = await readFile(join(runsRoot, filename), 'utf8')
-    const report = parseEvaluationReport(JSON.parse(reportContent))
+    const report = parseArchivableReport(reportContent)
     const legacy = report.reportVersion === 1
     const runId = requireCanonicalId(report.runId, 'runId')
     if (archivedRuns.has(runId)) throw new Error('同一归档中 runId 必须唯一')
@@ -340,7 +349,7 @@ export async function readArchivedLabels(dataRoot: string): Promise<Record<strin
     const [{ content: reportContent }, { content: labelContent }] = await Promise.all([
       verifiedContent(root, reportReference, 'report'), verifiedContent(root, labelReference, 'label'),
     ])
-    const report = parseEvaluationReport(JSON.parse(reportContent))
+    const report = parseArchivableReport(reportContent)
     const reportCases = Array.isArray(report.cases) ? report.cases.map(object) : []
     const expectedCaseIds = reportCases.map(item => requireCanonicalId(item.id, 'report caseId'))
     if (new Set(expectedCaseIds).size !== expectedCaseIds.length) throw new Error('report caseId 不唯一')

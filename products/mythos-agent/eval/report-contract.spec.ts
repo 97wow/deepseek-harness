@@ -205,13 +205,14 @@ describe('M3 + DSH 评测证据报告', () => {
     process.env.MYTHOS_EVAL_INVOCATION_JSON = JSON.stringify(['standard'])
     try {
       const productRoot = join(artifactRoot, 'product')
-      const { attestation, report } = await buildAttestedEvaluationReport({
+      const attestedInput = {
         cases: [completeCase()],
         config: { endpoint: 'https://example.invalid/v1', timeoutMs: 10 },
         draft: { baseline: { suite: 'release', timeoutMs: 10, variant: 'default' }, runId: 'run-attested' },
-        entry: 'standard', entryId: 'standard', productRoot, repoRoot: artifactRoot,
+        entry: 'standard' as const, entryId: 'standard' as const, productRoot, repoRoot: artifactRoot,
         requestedModel: 'requested-model', requestedProvider: 'requested-provider',
-      })
+      }
+      const { attestation, report } = await buildAttestedEvaluationReport(attestedInput)
       const implementation = report.implementation as Record<string, unknown>
       const runtime = implementation.runtime as Record<string, unknown>
       const snapshot = implementation.snapshot as Record<string, unknown>
@@ -232,6 +233,9 @@ describe('M3 + DSH 评测证据报告', () => {
       expect(parseEvaluationReport(serialized, JSON.parse(JSON.stringify(attestation)) as EvaluationReportAttestation))
         .toMatchObject({ acceptance: { failures: expect.arrayContaining(['trusted_attestation_invalid']), passed: false }, passed: false })
       expect(parseEvaluationReport(serialized, attestation)).toMatchObject({ acceptance: { passed: true }, passed: true })
+      const structuredInvalid = (value: unknown) => expect(parseEvaluationReport(value, attestation)).toMatchObject({
+        acceptance: { failures: ['trusted_attestation_invalid'], passed: false }, passed: false,
+      })
 
       const originalCase = (serialized.cases as Record<string, unknown>[])[0]!
       const schemaOutsideCases = [
@@ -242,9 +246,45 @@ describe('M3 + DSH 评测证据报告', () => {
         { ...originalCase, durationMs: undefined },
         Object.fromEntries(Object.entries(originalCase).filter(([key]) => key !== 'durationMs')),
       ]
-      for (const mutatedCase of schemaOutsideCases) {
-        expect(() => parseEvaluationReport({ ...serialized, cases: [mutatedCase] }, attestation)).toThrow()
+      for (const mutatedCase of schemaOutsideCases) structuredInvalid({ ...serialized, cases: [mutatedCase] })
+
+      const caseWithAmount = (amount: number): ReportCase => completeCase({ runtimeEvidence: {
+        agentIdleObserved: true,
+        providerResponses: [{ billing: { amount, currency: 'USD', source: 'provider_invoice' },
+          identity: { deployment: 'm3-production', model: 'deepseek-v4-flash', provider: 'deepseek' },
+          source: 'm3_provider_response' }],
+        sessionFlushObserved: true,
+      } })
+      expect((await buildAttestedEvaluationReport({ ...attestedInput, cases: [caseWithAmount(0.25)] })).report.passed).toBe(true)
+      for (const amount of [1e308, Number.MAX_VALUE, Number.MAX_SAFE_INTEGER + 1, Number.MIN_VALUE, -0,
+        Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        expect((await buildAttestedEvaluationReport({ ...attestedInput, cases: [caseWithAmount(amount)] })).report.passed).toBe(false)
+        structuredInvalid({ ...serialized, cases: [{ ...originalCase,
+          billing: { ...(originalCase.billing as object), amount } }] })
       }
+
+      const implementationFiles = (implementation.files as Record<string, unknown>[])
+      const runtimeEnvironment = (implementation.runtime as Record<string, unknown>).environment as Record<string, unknown>
+      structuredInvalid({ ...serialized, cases: [originalCase, { ...originalCase }] })
+      await expect(buildAttestedEvaluationReport({ ...attestedInput, cases: [completeCase(), completeCase()] })).rejects.toThrow()
+      structuredInvalid({ ...serialized, cases: [{ ...originalCase,
+        relatedRawSessions: ['home/sessions/duplicate.zstd', 'home/sessions/duplicate.zstd'] }] })
+      structuredInvalid({ ...serialized, implementation: { ...implementation,
+        files: [...implementationFiles, { ...implementationFiles[0] }] } })
+      structuredInvalid({ ...serialized, implementation: { ...implementation,
+        runtime: { ...(implementation.runtime as object), environment: { ...runtimeEnvironment,
+          keys: ['DUPLICATE_KEY', 'DUPLICATE_KEY'] } } } })
+
+      const nullPrototypeBaseline = Object.assign(Object.create(null), serialized.baseline)
+      structuredInvalid({ ...serialized, baseline: nullPrototypeBaseline })
+      const customPrototypeReport = Object.assign(Object.create({ inherited: true }), serialized)
+      structuredInvalid(customPrototypeReport)
+      const customPrototypeCases = [originalCase]
+      Object.setPrototypeOf(customPrototypeCases, { custom: true })
+      structuredInvalid({ ...serialized, cases: customPrototypeCases })
+      class CaseArray extends Array<Record<string, unknown>> {}
+      structuredInvalid({ ...serialized, cases: new CaseArray(originalCase) })
+      structuredInvalid(new Proxy(serialized, {}))
 
       expect(evaluationReportCanonicalSha256({ value: null })).not.toBe(evaluationReportCanonicalSha256({}))
       expect(() => evaluationReportCanonicalSha256({ value: undefined })).toThrow('undefined')
@@ -436,6 +476,8 @@ describe('M3 + DSH 评测证据报告', () => {
       passed: false, reportVersion: 2, runId: 'run-1',
       source: { gitHead: 'head', worktree: { trackedDirty: false, untrackedPresent: false } },
     }).reportVersion).toBe(2)
-    expect(() => parseEvaluationReport({ cases: [], reportVersion: 2 })).toThrow('schema')
+    expect(parseEvaluationReport({ cases: [], reportVersion: 2 })).toMatchObject({
+      acceptance: { failures: ['trusted_attestation_invalid'], passed: false }, passed: false,
+    })
   })
 })

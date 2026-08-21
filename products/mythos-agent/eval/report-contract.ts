@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { readFile, realpath } from 'node:fs/promises'
 import { relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
+import { isProxy } from 'node:util/types'
 import {
   evaluationEntryRegistry,
   parseEvaluationLaunchArguments,
@@ -30,6 +31,8 @@ const knownOverlays = new Set([
 ])
 const knownTurnReasons = new Set(['aborted', 'blocked', 'completed', 'error', 'interrupted', 'max-tokens'])
 const supportedCurrencies = new Set(['USD'])
+const trustedBillingScale = 1_000_000_000
+const maxTrustedBillingAmount = 1_000_000
 
 export type FailureCategory = 'model_failure' | 'harness_failure' | 'infrastructure_failure'
 
@@ -102,12 +105,22 @@ function canonical(value: unknown): string {
 
 function strictNumberCanonical(value: number, path: string): string {
   if (!Number.isFinite(value) || Object.is(value, -0) || value < 0) throw new Error(`v2 评测报告数值域无效：${path}`)
+  if (path.endsWith('.billing.amount') && trustedBillingAmount(value) === null) {
+    throw new Error(`v2 评测报告计费金额域无效：${path}`)
+  }
   if (!path.endsWith('.billing.amount') && !Number.isSafeInteger(value)) {
     throw new Error(`v2 评测报告整数域无效：${path}`)
   }
   const bytes = Buffer.allocUnsafe(8)
   bytes.writeDoubleBE(value)
   return `d${bytes.toString('hex')}`
+}
+
+function trustedBillingAmount(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || Object.is(value, -0)
+    || value < 0 || value > maxTrustedBillingAmount) return null
+  const scaled = value * trustedBillingScale
+  return Number.isSafeInteger(scaled) && scaled / trustedBillingScale === value ? value : null
 }
 
 function strictStringCanonical(value: string): string {
@@ -124,10 +137,12 @@ function strictCanonical(value: unknown, path = '$', ancestors = new Set<object>
   if (typeof value === 'number') return strictNumberCanonical(value, path)
   if (typeof value === 'string') return strictStringCanonical(value)
   if (typeof value !== 'object') throw new Error(`v2 评测报告包含不支持的值：${path}`)
+  if (isProxy(value)) throw new Error(`v2 评测报告不得包含 Proxy：${path}`)
   if (ancestors.has(value)) throw new Error(`v2 评测报告不得包含循环引用：${path}`)
   ancestors.add(value)
   try {
     if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) throw new Error(`v2 评测报告数组原型无效：${path}`)
       const keys = Object.keys(value)
       const ownKeys = Reflect.ownKeys(value)
       if (keys.length !== value.length || keys.some((key, index) => key !== String(index))
@@ -141,7 +156,7 @@ function strictCanonical(value: unknown, path = '$', ancestors = new Set<object>
       return `a${String(value.length)}[${value.map((item, index) => strictCanonical(item, `${path}[${String(index)}]`, ancestors)).join('')}]`
     }
     const prototype = Object.getPrototypeOf(value)
-    if (prototype !== Object.prototype && prototype !== null) throw new Error(`v2 评测报告对象原型无效：${path}`)
+    if (prototype !== Object.prototype) throw new Error(`v2 评测报告对象原型无效：${path}`)
     const ownKeys = Reflect.ownKeys(value)
     if (ownKeys.some(key => typeof key === 'symbol')) throw new Error(`v2 评测报告不得包含 symbol 键：${path}`)
     const keys = Object.keys(value).sort()
@@ -166,6 +181,17 @@ function record(value: unknown): Record<string, unknown> {
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const keys = new Set(allowed)
   return Object.keys(value).every(key => keys.has(key))
+}
+
+function uniqueStrings(value: unknown): boolean {
+  return Array.isArray(value) && value.every(item => typeof item === 'string')
+    && new Set(value).size === value.length
+}
+
+function uniqueRecordKey(value: unknown, key: string): boolean {
+  if (!Array.isArray(value)) return false
+  const keys = value.map(item => record(item)[key])
+  return keys.every(item => typeof item === 'string') && new Set(keys).size === keys.length
 }
 
 function nonNegativeInteger(value: unknown): number | null {
@@ -396,8 +422,7 @@ export function validateBilling(value: unknown, trustedSource = false): {
   amount: number | null; currency: string | null; source: string | null; verified: boolean
 } {
   const billing = record(value)
-  const rawAmount = finiteNumber(billing.amount)
-  const amount = rawAmount !== null && rawAmount >= 0 ? rawAmount : null
+  const amount = trustedBillingAmount(billing.amount)
   const currency = typeof billing.currency === 'string' && supportedCurrencies.has(billing.currency) ? billing.currency : null
   const source = billing.source === 'provider_invoice' || billing.source === 'provider_signed_usage' ? billing.source : null
   return { amount, currency, source, verified: trustedSource && amount !== null && currency !== null && source !== null && billing.verified === true }
@@ -606,7 +631,7 @@ Record<string, unknown> {
 
 export async function buildAttestedEvaluationReport(input: EvaluationReportInput): Promise<AttestedEvaluationReport> {
   const report = await projectEvaluationReport(input)
-  parseEvaluationReport(report)
+  validateEvaluationReport(report)
   const attestation = issueReportAttestation(report)
   return { attestation, report: parseEvaluationReport(report, attestation) }
 }
@@ -616,11 +641,9 @@ export async function buildEvaluationReport(input: EvaluationReportInput): Promi
   return parseEvaluationReport(await projectEvaluationReport(input))
 }
 
-export function parseEvaluationReport(
-  value: unknown,
-  attestation?: EvaluationReportAttestation,
-): Record<string, unknown> {
+function validateEvaluationReport(value: unknown): Record<string, unknown> {
   const report = record(value)
+  if (!Object.hasOwn(report, 'reportVersion') || !Object.hasOwn(report, 'cases')) throw new Error('评测报告缺少 own schema 字段')
   if (report.reportVersion !== 1 && report.reportVersion !== 2) throw new Error('不支持的评测报告版本')
   if (!Array.isArray(report.cases)) throw new Error('评测报告缺少 cases')
   if (report.reportVersion === 2) {
@@ -636,6 +659,13 @@ export function parseEvaluationReport(
     const requestedIdentity = record(identity.requested)
     const dirtyDiff = record(source.dirtyDiff)
     const dsh = record(source.dsh)
+    const artifact = implementation.artifact === null ? null : record(implementation.artifact)
+    const environment = record(runtime.environment)
+    const snapshot = record(implementation.snapshot)
+    const requiredTopKeys = ['acceptance', 'cases', 'implementation', 'modelIdentity', 'passed', 'reportVersion', 'runId', 'source']
+    const requiredImplementationKeys = ['entry', 'files', 'runtime', 'sha256']
+    const requiredRuntimeKeys = ['endpoint', 'parametersSha256']
+    const requiredSourceKeys = ['gitHead', 'worktree']
     const projectedShapeInvalid = report.baseline !== undefined && (
       !hasOnlyKeys(baseline, ['configurationSha256', 'dshVersion', 'mythosVersion', 'suite', 'timeoutMs', 'variant'])
       || ['configurationSha256', 'dshVersion', 'mythosVersion', 'suite', 'timeoutMs', 'variant']
@@ -650,21 +680,40 @@ export function parseEvaluationReport(
       || (replay !== null && (!hasOnlyKeys(replay, ['iteration', 'total'])
         || !Object.hasOwn(replay, 'iteration') || !Object.hasOwn(replay, 'total')
         || !nullableNonNegativeInteger(replay.iteration) || !nullableNonNegativeInteger(replay.total)))
-      || !hasOnlyKeys(identity, ['requested', 'server']) || !hasOnlyKeys(requestedIdentity, ['model', 'provider'])
+      || !hasOnlyKeys(identity, ['requested', 'server']) || !Object.hasOwn(identity, 'requested')
+      || !hasOnlyKeys(requestedIdentity, ['model', 'provider'])
+      || !['model', 'provider'].every(key => Object.hasOwn(requestedIdentity, key))
       || !['model', 'provider'].every(key => requestedIdentity[key] === null || safeString(requestedIdentity[key]) !== null)
       || !hasOnlyKeys(source, ['dirtyDiff', 'dsh', 'gitHead', 'productVersion', 'worktree'])
+      || !['dirtyDiff', 'dsh', 'gitHead', 'productVersion', 'worktree'].every(key => Object.hasOwn(source, key))
       || !hasOnlyKeys(dirtyDiff, ['algorithm', 'scope', 'sha256']) || dirtyDiff.algorithm !== 'sha256'
+      || !['algorithm', 'scope', 'sha256'].every(key => Object.hasOwn(dirtyDiff, key))
       || dirtyDiff.scope !== 'tracked-head-diff-only' || safeString(dirtyDiff.sha256) === null
       || !hasOnlyKeys(dsh, ['declaredCommit', 'declaredVersion'])
+      || !['declaredCommit', 'declaredVersion'].every(key => Object.hasOwn(dsh, key))
       || !['declaredCommit', 'declaredVersion'].every(key => dsh[key] === null || safeString(dsh[key]) !== null)
       || !(source.productVersion === null || safeString(source.productVersion) !== null)
+      || !Object.hasOwn(implementation, 'artifact') || !Object.hasOwn(implementation, 'snapshot')
+      || !['gitCommit', 'gitObjectFormat', 'gitTree', 'sha256'].every(key => Object.hasOwn(snapshot, key))
+      || !Object.hasOwn(runtime, 'artifactSha256')
+      || !Object.hasOwn(runtime, 'environment') || !Object.hasOwn(environment, 'keys') || !uniqueStrings(environment.keys)
+      || (artifact !== null && (!Object.hasOwn(artifact, 'files') || !Object.hasOwn(artifact, 'mutableRoots')
+        || !uniqueRecordKey(artifact.files, 'path') || !uniqueStrings(artifact.mutableRoots)))
     )
     if (!hasOnlyKeys(report, ['acceptance', 'baseline', 'cases', 'completedAt', 'implementation', 'modelIdentity', 'passed', 'profile', 'replay', 'reportVersion', 'runId', 'source', 'startedAt'])
       || !hasOnlyKeys(acceptance, ['failures', 'passed'])
+      || requiredTopKeys.some(key => !Object.hasOwn(report, key))
+      || ['failures', 'passed'].some(key => !Object.hasOwn(acceptance, key))
+      || requiredImplementationKeys.some(key => !Object.hasOwn(implementation, key))
+      || requiredRuntimeKeys.some(key => !Object.hasOwn(runtime, key))
+      || !Object.hasOwn(record(runtime.endpoint), 'sha256')
+      || !Object.hasOwn(identity, 'server') || requiredSourceKeys.some(key => !Object.hasOwn(source, key))
+      || ['trackedDirty', 'untrackedPresent'].some(key => !Object.hasOwn(worktree, key))
       || projectedShapeInvalid
       || typeof acceptance.passed !== 'boolean' || !Array.isArray(acceptance.failures)
+      || !uniqueStrings(acceptance.failures) || !uniqueRecordKey(report.cases, 'id')
       || typeof report.passed !== 'boolean' || typeof report.runId !== 'string'
-      || typeof implementation.sha256 !== 'string' || !Array.isArray(implementation.files)
+      || typeof implementation.sha256 !== 'string' || !uniqueRecordKey(implementation.files, 'path')
       || !entriesInclude(implementation.entry) || typeof record(runtime.endpoint).sha256 !== 'string'
       || (implementation.entryId !== undefined
         && (typeof implementation.entryId !== 'string' || !evaluationEntryRegistry.has(implementation.entryId as EvaluationEntryId)))
@@ -679,6 +728,7 @@ export function parseEvaluationReport(
       const billing = record(testCase.billing)
       const completion = record(testCase.completionEvidence)
       const tokenValues = record(billing.tokens)
+      const verification = record(testCase.verification)
       const expectedBilling = validateBilling(billing, true)
       const expectedTokensVerified = testCase.observationSource === 'dsh_session_log'
         && record(testCase.metrics).usageObserved === true
@@ -688,6 +738,14 @@ export function parseEvaluationReport(
       if (!hasOnlyKeys(testCase, ['accepted', 'billing', 'capabilityEligible', 'completionEvidence', 'durationMs', 'failure', 'id', 'metrics',
         'observationSource', 'passed', 'processExitCode', 'rawSession', 'relatedRawSessions', 'tier', 'timedOut', 'verification'])
         || requiredCaseKeys.some(key => !Object.hasOwn(testCase, key))
+        || !hasOnlyKeys(billing, ['amount', 'currency', 'source', 'tokens', 'tokensVerified', 'verified'])
+        || !['amount', 'currency', 'source', 'tokens', 'tokensVerified', 'verified'].every(key => Object.hasOwn(billing, key))
+        || !hasOnlyKeys(tokenValues, ['cache', 'input', 'output'])
+        || !['cache', 'input', 'output'].every(key => Object.hasOwn(tokenValues, key))
+        || !hasOnlyKeys(completion, ['agentIdle', 'externalVerifier', 'sessionFlush', 'turnReason'])
+        || !['agentIdle', 'externalVerifier', 'sessionFlush', 'turnReason'].every(key => Object.hasOwn(completion, key))
+        || !hasOnlyKeys(failure, ['category', 'reason']) || !['category', 'reason'].every(key => Object.hasOwn(failure, key))
+        || !hasOnlyKeys(verification, ['passed']) || !Object.hasOwn(verification, 'passed')
         || typeof testCase.id !== 'string' || typeof testCase.passed !== 'boolean' || typeof testCase.accepted !== 'boolean'
         || typeof testCase.capabilityEligible !== 'boolean' || typeof testCase.timedOut !== 'boolean'
         || !nullableNonNegativeInteger(testCase.durationMs) || !nullableNonNegativeInteger(testCase.processExitCode)
@@ -697,7 +755,8 @@ export function parseEvaluationReport(
         || !(testCase.tier === null || safeString(testCase.tier) !== null)
         || (testCase.rawSession !== undefined && (typeof testCase.rawSession !== 'string' || !safeSessionPath.test(testCase.rawSession)))
         || (testCase.relatedRawSessions !== undefined && (!Array.isArray(testCase.relatedRawSessions)
-          || !testCase.relatedRawSessions.every(path => typeof path === 'string' && safeSessionPath.test(path))))
+          || !testCase.relatedRawSessions.every(path => typeof path === 'string' && safeSessionPath.test(path))
+          || !uniqueStrings(testCase.relatedRawSessions)))
         || !['model_failure', 'harness_failure', 'infrastructure_failure', null].includes(failure.category as never)
         || billing.amount !== expectedBilling.amount || billing.currency !== expectedBilling.currency
         || billing.source !== expectedBilling.source || billing.verified !== expectedBilling.verified
@@ -738,8 +797,22 @@ export function parseEvaluationReport(
       || acceptance.passed !== declaredPassed || report.passed !== declaredPassed
       || canonical(baseFailures) !== canonical(expectedFailures)) throw new Error('v2 评测报告 acceptance 派生语义不一致')
   }
-  if (attestationMatches(report, attestation)) return report
-  return untrustedReport(report, attestation === undefined ? 'trusted_attestation_missing' : 'trusted_attestation_invalid')
+  return report
+}
+
+function invalidEvaluationReport(): Record<string, unknown> {
+  return { acceptance: { failures: ['trusted_attestation_invalid'], passed: false }, cases: [], passed: false, reportVersion: 2 }
+}
+
+export function parseEvaluationReport(
+  value: unknown,
+  attestation?: EvaluationReportAttestation,
+): Record<string, unknown> {
+  try {
+    const report = validateEvaluationReport(value)
+    if (attestationMatches(report, attestation)) return report
+    return untrustedReport(report, attestation === undefined ? 'trusted_attestation_missing' : 'trusted_attestation_invalid')
+  } catch { return invalidEvaluationReport() }
 }
 
 function entriesInclude(value: unknown): value is EvaluationEntry {
