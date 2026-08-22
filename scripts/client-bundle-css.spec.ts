@@ -21,7 +21,7 @@ const fixtureRoot = fileURLToPath(new URL('./fixtures/client-bundle-css', import
 function fixture(name: 'module' | 'global' | 'inline'): { importer: string; stylesheet: string } {
   const directory = join(fixtureRoot, name)
   return {
-    importer: join(directory, 'index.ts'),
+    importer: join(directory, 'index.fixture'),
     stylesheet: join(directory, name === 'module' ? 'Fixture.module.css' : 'base.css'),
   }
 }

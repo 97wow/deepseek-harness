@@ -1,1 +1,0 @@
-import './Fixture.module.css'
