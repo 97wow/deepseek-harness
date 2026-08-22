@@ -79,6 +79,23 @@ const SKIP_WORKSPACE_BUILD: UserConfig = { entry: '' }
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../..', import.meta.url))
 
+function repositoryStylesheetId(prefix: string, file: string): string {
+  const repositoryPath = relative(REPOSITORY_ROOT, file).split(sep).join('/')
+  if (repositoryPath === '..' || repositoryPath.startsWith('../') || isAbsolute(repositoryPath)) {
+    throw new Error(`tsdown: stylesheet ${file} is outside the repository`)
+  }
+  return prefix + repositoryPath + CSS_VIRTUAL_SUFFIX
+}
+
+function stylesheetFromVirtualId(prefix: string, virtualId: string): string {
+  const repositoryPath = virtualId.slice(prefix.length, -CSS_VIRTUAL_SUFFIX.length)
+  const file = resolvePath(REPOSITORY_ROOT, repositoryPath)
+  if (relative(REPOSITORY_ROOT, file).startsWith(`..${sep}`)) {
+    throw new Error(`tsdown: virtual stylesheet ${virtualId} escapes the repository`)
+  }
+  return file
+}
+
 /** Rebase a physical lib-relative source onto a browser URL that mirrors the repository directories. */
 function browserSourcePath(source: string, sourcemapPath: string): string {
   if (!source.startsWith('.')) return source
@@ -500,11 +517,11 @@ function clientConfig(id: string, entry: string): UserConfig {
       resolveId(source: string, importer: string | undefined) {
         if (!source.endsWith('.module.css')) return null
         const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
-        return CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+        return repositoryStylesheetId(CSS_VIRTUAL_PREFIX, abs)
       },
       async load(virtualId: string) {
         if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
-        const fileId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+        const fileId = stylesheetFromVirtualId(CSS_VIRTUAL_PREFIX, virtualId)
         // The virtual id otherwise hides the physical stylesheet from Rolldown's watch graph.
         this.addWatchFile(fileId)
         const source = await readFile(fileId)
@@ -529,14 +546,15 @@ function clientConfig(id: string, entry: string): UserConfig {
         if (!source.endsWith(`.css${INLINE_CSS_QUERY}`)) return null
         const stylesheet = source.slice(0, -INLINE_CSS_QUERY.length)
         const abs = importer !== undefined ? sourceAssetPath(stylesheet, importer) : stylesheet
-        return INLINE_CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+        return repositoryStylesheetId(INLINE_CSS_VIRTUAL_PREFIX, abs)
       },
       async load(virtualId: string) {
         if (!virtualId.startsWith(INLINE_CSS_VIRTUAL_PREFIX)) return null
-        const fileId = virtualId.slice(INLINE_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+        const fileId = stylesheetFromVirtualId(INLINE_CSS_VIRTUAL_PREFIX, virtualId)
         this.addWatchFile(fileId)
         const source = await readFile(fileId)
-        const { code } = transform({ filename: fileId, code: source, minify: true })
+        const deterministicFilename = relative(REPOSITORY_ROOT, fileId).split(sep).join('/')
+        const { code } = transform({ filename: deterministicFilename, code: source, minify: true })
         return `export default ${JSON.stringify(code.toString())};`
       },
     }, {
@@ -544,14 +562,15 @@ function clientConfig(id: string, entry: string): UserConfig {
       resolveId(source: string, importer: string | undefined) {
         if (!source.endsWith('.css') || source.endsWith('.module.css')) return null
         const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
-        return GLOBAL_CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+        return repositoryStylesheetId(GLOBAL_CSS_VIRTUAL_PREFIX, abs)
       },
       async load(virtualId: string) {
         if (!virtualId.startsWith(GLOBAL_CSS_VIRTUAL_PREFIX)) return null
-        const fileId = virtualId.slice(GLOBAL_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+        const fileId = stylesheetFromVirtualId(GLOBAL_CSS_VIRTUAL_PREFIX, virtualId)
         this.addWatchFile(fileId)
         const source = await readFile(fileId)
-        const { code } = transform({ filename: fileId, code: source, minify: true })
+        const deterministicFilename = relative(REPOSITORY_ROOT, fileId).split(sep).join('/')
+        const { code } = transform({ filename: deterministicFilename, code: source, minify: true })
         return styleInjectionModule(id, fileId, code.toString())
       },
     }],

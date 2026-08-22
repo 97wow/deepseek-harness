@@ -92,6 +92,28 @@ export async function normalizeReleaseMetadata(path: string): Promise<void> {
   await utimes(path, fixedTimestamp, fixedTimestamp)
 }
 
+/** Reject checkout- or staging-root bytes from every regular release file. */
+export async function assertNoAbsoluteBuildRoots(root: string, candidates: readonly string[]): Promise<void> {
+  const needles = candidates.filter(Boolean).map(candidate => Buffer.from(resolve(candidate)))
+  async function visit(path: string): Promise<void> {
+    const metadata = await lstat(path)
+    if (metadata.isSymbolicLink()) return
+    if (metadata.isFile()) {
+      const contents = await readFile(path)
+      const leaked = needles.find(needle => contents.includes(needle))
+      if (leaked !== undefined) {
+        throw new Error(`Mythos 发布闭包包含绝对构建根：${relative(root, path)} (${leaked.toString('utf8')})`)
+      }
+      return
+    }
+    if (!metadata.isDirectory()) return
+    const children = await readdir(path)
+    children.sort((left, right) => left.localeCompare(right, 'en'))
+    for (const child of children) await visit(join(path, child))
+  }
+  await visit(root)
+}
+
 async function removeNonRuntimeDeployMetadata(path: string): Promise<void> {
   const children = await readdir(path, { withFileTypes: true })
   for (const child of children) {
@@ -123,7 +145,8 @@ async function sortedArchiveMembers(stagingRoot: string): Promise<string[]> {
 export async function archiveReleaseTree(stagingRoot: string): Promise<Buffer> {
   const members = await sortedArchiveMembers(stagingRoot)
   const tar = execFileSync('tar', [
-    '-cf', '-', '--format', 'gnutar', '--no-xattrs', '--no-recursion', '--null', '-C', stagingRoot, '-T', '-',
+    '-cf', '-', '--format', 'gnutar', '--no-xattrs', '--uid=0', '--gid=0', '--uname=root', '--gname=root',
+    '--numeric-owner', '--no-recursion', '--null', '-C', stagingRoot, '-T', '-',
   ], {
     env: { ...process.env, COPYFILE_DISABLE: '1' },
     input: Buffer.from(`${members.join('\0')}\0`),
@@ -239,6 +262,7 @@ async function stageRelease(stagingRoot: string, manifest: ProductManifest, sour
     version: manifest.version,
   }
   await writeFile(join(releaseRoot, 'package.json'), `${JSON.stringify(packagedManifest, undefined, 2)}\n`, { mode: 0o644 })
+  await assertNoAbsoluteBuildRoots(releaseRoot, [repositoryRoot, stagingRoot])
   const dependencyLockSha256 = createHash('sha256').update(await readFile(join(repositoryRoot, 'pnpm-lock.yaml'))).digest('hex')
   await writeIntegrityManifest(releaseRoot, {
     dependencyLockSha256,

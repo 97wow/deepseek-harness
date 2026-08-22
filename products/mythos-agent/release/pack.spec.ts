@@ -1,10 +1,11 @@
+import { spawnSync } from 'node:child_process'
 import { access, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
-import { archiveReleaseTree, buildWebFrontend, normalizeReleaseMetadata } from './pack.js'
+import { archiveReleaseTree, assertNoAbsoluteBuildRoots, buildWebFrontend, normalizeReleaseMetadata } from './pack.js'
 
 const temporaryRoots: string[] = []
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -24,6 +25,13 @@ afterEach(async () => {
 })
 
 describe('Mythos 发布包确定性', () => {
+  it('拒绝发布闭包中的绝对 checkout 或 staging 根', async () => {
+    const stagingRoot = await stagingFixture()
+    const releaseRoot = join(stagingRoot, 'mythos-agent')
+    await writeFile(join(releaseRoot, 'runtime', 'leak.js'), `//#region dsh-css:${repositoryRoot}/packages/example.css`)
+    await expect(assertNoAbsoluteBuildRoots(releaseRoot, [repositoryRoot, stagingRoot])).rejects.toThrow('绝对构建根')
+  })
+
   it('不依赖预构建 dist 即可从 frozen workspace 构建 Web frontend', async () => {
     const webDist = join(repositoryRoot, 'apps', 'web', 'dist')
     await rm(webDist, { force: true, recursive: true })
@@ -45,5 +53,8 @@ describe('Mythos 发布包确定性', () => {
     const secondTar = gunzipSync(second)
     const difference = firstTar.findIndex((byte, index) => byte !== secondTar[index])
     expect(first.equals(second), `首个 tar 差异 offset=${String(difference)}，block=${String(Math.floor(difference / 512))}`).toBe(true)
+    const listing = spawnSync('tar', ['--numeric-owner', '-tvzf', '-'], { encoding: 'utf8', input: first })
+    expect(listing.status, listing.stderr).toBe(0)
+    for (const line of listing.stdout.trim().split('\n')) expect(line).toMatch(/^\S+\s+0\s+0\s+/u)
   })
 })
