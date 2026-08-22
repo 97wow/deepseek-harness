@@ -134,6 +134,24 @@ describe('发布包 M3 CLI wire contract', () => {
   it('拒绝同一 read call 的重复 tool result', () => {
     const wire = requests()
     messages(wire, 1).push(structuredClone(messages(wire, 1)[1]!))
-    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('tool result 数量不是 1')
+    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('role=tool 总数不是 1')
+  })
+
+  it('拒绝与 read call 无关的孤儿 tool result', () => {
+    const wire = requests()
+    messages(wire, 1).push({ role: 'tool', tool_call_id: 'orphan-call', content: 'orphan' })
+    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('role=tool 总数不是 1')
+  })
+
+  it('拒绝 assistant read call 与 tool result 之间插入非 tool 消息', () => {
+    const wire = requests()
+    messages(wire, 1).splice(1, 0, { role: 'user', content: 'interleaved' })
+    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('必须紧邻 assistant read tool call')
+  })
+
+  it('拒绝 tool result 后追加任何消息', () => {
+    const wire = requests()
+    messages(wire, 1).push({ role: 'assistant', content: 'post-result' })
+    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('必须是次请求 messages 最后一项')
   })
 })

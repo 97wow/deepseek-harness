@@ -280,15 +280,20 @@ function verifyReadExchange(messages: Array<Record<string, unknown>>, nonce: str
 
   const results: IndexedMessageValue[] = []
   for (const [index, message] of messages.entries()) {
-    if (message.role === 'tool' && message.tool_call_id === call.id) results.push({ index, value: message })
+    if (message.role === 'tool') results.push({ index, value: message })
   }
   if (results.length === 0) throw new Error('Mythos M3 mock 次请求缺少与 read call id 关联的真实 tool result')
-  if (results.length !== 1) throw new Error('Mythos M3 mock read tool result 数量不是 1，wire 存在多义性')
+  if (results.length !== 1) throw new Error('Mythos M3 mock 次请求 role=tool 总数不是 1，wire 存在多义性')
   const result = results[0]!
+  if (result.value.tool_call_id !== call.id) {
+    throw new Error('Mythos M3 mock 次请求缺少与 read call id 关联的真实 tool result')
+  }
   if (result.index <= indexedCall.index) throw new Error('Mythos M3 mock tool result 必须位于 assistant read tool call 之后')
   if (typeof result.value.content !== 'string' || !result.value.content.includes(nonce)) {
     throw new Error('Mythos M3 mock 次请求缺少与 read call id 关联的真实 tool result')
   }
+  if (result.index !== indexedCall.index + 1) throw new Error('Mythos M3 mock tool result 必须紧邻 assistant read tool call')
+  if (result.index !== messages.length - 1) throw new Error('Mythos M3 mock tool result 必须是次请求 messages 最后一项')
 }
 
 /** Assert the two OpenAI-compatible requests prove persona, tool execution, and continuation. */
