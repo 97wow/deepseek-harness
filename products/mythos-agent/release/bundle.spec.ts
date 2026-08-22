@@ -15,6 +15,7 @@ async function fixture(): Promise<string> {
     ['home/profiles/mythos-web/cordis.patch.yml', 'web'],
     ['runtime/dsh/lib/bin.js', 'dsh'],
     ['runtime/dsh/package.json', '{"version":"0.1.0-rc.8"}'],
+    ['runtime/dsh/frontend/dist/index.html', '<html>mythos</html>'],
     ['package.json', `{"version":"0.1.1","mythos":{"dshVersion":"0.1.0-rc.8","dshCommit":"${'b'.repeat(40)}"}}`],
   ]) {
     const output = join(root, path)
@@ -22,6 +23,8 @@ async function fixture(): Promise<string> {
     await writeFile(output, contents)
   }
   await mkdir(join(root, 'runtime/dsh/node_modules/.pnpm/node_modules'), { recursive: true })
+  await mkdir(join(root, 'runtime/dsh/node_modules/.pnpm/node_modules/@deepseek-ai'), { recursive: true })
+  await symlink('../../../../frontend', join(root, 'runtime/dsh/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-web-frontend'))
   await symlink('runtime/dsh/node_modules/.pnpm/node_modules', join(root, 'node_modules'))
   return root
 }

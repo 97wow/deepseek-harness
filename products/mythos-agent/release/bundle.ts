@@ -167,6 +167,7 @@ export async function verifyExtractedBundle(root: string): Promise<IntegrityMani
     'home/profiles/mythos-web/cordis.patch.yml',
     'node_modules',
     'runtime/dsh/lib/bin.js',
+    'runtime/dsh/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-web-frontend',
     'runtime/dsh/package.json',
   ]) {
     if (!expected.has(required)) throw new Error(`发布包缺少运行文件：${required}`)
@@ -177,6 +178,10 @@ export async function verifyExtractedBundle(root: string): Promise<IntegrityMani
   }
   const runtimeManifest = JSON.parse(await readFile(join(canonicalRoot, 'runtime', 'dsh', 'package.json'), 'utf8')) as {
     version?: unknown
+  }
+  const frontendIndex = await realpath(join(canonicalRoot, 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'index.html'))
+  if (!inside(canonicalRoot, frontendIndex) || !(await lstat(frontendIndex)).isFile()) {
+    throw new Error('发布包 Web frontend 不在运行闭包内')
   }
   if (productManifest.version !== manifest.productVersion
     || productManifest.mythos?.dshVersion !== manifest.dshVersion
