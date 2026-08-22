@@ -255,6 +255,42 @@ function readCallArguments(value: unknown): Record<string, unknown> {
   return objectValue(parsed, 'read tool call arguments')
 }
 
+interface IndexedMessageValue {
+  index: number
+  value: Record<string, unknown>
+}
+
+function verifyReadExchange(messages: Array<Record<string, unknown>>, nonce: string): void {
+  const calls: IndexedMessageValue[] = []
+  for (const [index, message] of messages.entries()) {
+    if (message.role !== 'assistant' || message.tool_calls === undefined) continue
+    for (const call of objectRows(message.tool_calls, 'assistant tool_calls')) calls.push({ index, value: call })
+  }
+  if (calls.length === 0) throw new Error('Mythos M3 mock 次请求缺少 assistant read tool call')
+  if (calls.length !== 1) throw new Error('Mythos M3 mock 次请求 assistant tool call 数量不是 1，wire 存在多义性')
+
+  const indexedCall = calls[0]!
+  const call = indexedCall.value
+  if (call.type !== 'function') throw new Error('Mythos M3 mock read tool call type 必须为 function')
+  if (typeof call.id !== 'string' || call.id.trim() === '') throw new Error('Mythos M3 mock read tool call 缺少有效 id')
+  const implementation = objectValue(call.function, 'assistant tool call function')
+  if (implementation.name !== 'read') throw new Error('Mythos M3 mock assistant tool call 不是 read')
+  const argumentsValue = readCallArguments(implementation.arguments)
+  if (argumentsValue.file_path !== 'proof.txt') throw new Error('Mythos M3 mock read tool call 未指向 proof.txt')
+
+  const results: IndexedMessageValue[] = []
+  for (const [index, message] of messages.entries()) {
+    if (message.role === 'tool' && message.tool_call_id === call.id) results.push({ index, value: message })
+  }
+  if (results.length === 0) throw new Error('Mythos M3 mock 次请求缺少与 read call id 关联的真实 tool result')
+  if (results.length !== 1) throw new Error('Mythos M3 mock read tool result 数量不是 1，wire 存在多义性')
+  const result = results[0]!
+  if (result.index <= indexedCall.index) throw new Error('Mythos M3 mock tool result 必须位于 assistant read tool call 之后')
+  if (typeof result.value.content !== 'string' || !result.value.content.includes(nonce)) {
+    throw new Error('Mythos M3 mock 次请求缺少与 read call id 关联的真实 tool result')
+  }
+}
+
 /** Assert the two OpenAI-compatible requests prove persona, tool execution, and continuation. */
 export function verifyM3Requests(requests: readonly MockRequest[], prompt: string, nonce: string): void {
   if (requests.length !== 2) throw new Error(`Mythos M3 mock 请求数应为 2，实际 ${String(requests.length)}`)
@@ -278,26 +314,7 @@ export function verifyM3Requests(requests: readonly MockRequest[], prompt: strin
     && (tool.function as Record<string, unknown>).name === 'read')
   if (readSchema === undefined) throw new Error('Mythos M3 mock 工具 schema 缺少 read')
 
-  let readCallId: string | undefined
-  for (const message of secondMessages.filter(row => row.role === 'assistant')) {
-    if (!Array.isArray(message.tool_calls)) continue
-    for (const call of objectRows(message.tool_calls, 'assistant tool_calls')) {
-      const implementation = objectValue(call.function, 'assistant tool call function')
-      if (implementation.name !== 'read') continue
-      if (typeof call.id !== 'string' || call.id.trim() === '') throw new Error('Mythos M3 mock read tool call 缺少有效 id')
-      const argumentsValue = readCallArguments(implementation.arguments)
-      if (argumentsValue.file_path !== 'proof.txt') throw new Error('Mythos M3 mock read tool call 未指向 proof.txt')
-      readCallId = call.id
-      break
-    }
-    if (readCallId !== undefined) break
-  }
-  if (readCallId === undefined) throw new Error('Mythos M3 mock 次请求缺少 assistant read tool call')
-  const toolResult = secondMessages.find(message => message.role === 'tool'
-    && message.tool_call_id === readCallId && typeof message.content === 'string' && message.content.includes(nonce))
-  if (toolResult === undefined) {
-    throw new Error('Mythos M3 mock 次请求缺少与 read call id 关联的真实 tool result')
-  }
+  verifyReadExchange(secondMessages, nonce)
 }
 
 async function collectSessionFiles(root: string): Promise<string[]> {

@@ -89,7 +89,7 @@ describe('发布包 M3 CLI wire contract', () => {
     const wire = requests()
     const call = toolCalls(messages(wire, 1)[0]!)[0]!
     call.function = { name: 'write', arguments: JSON.stringify({ file_path: 'proof.txt' }) }
-    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('缺少 assistant read tool call')
+    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('不是 read')
   })
 
   it('拒绝 read arguments 指向其他文件', () => {
@@ -110,5 +110,30 @@ describe('发布包 M3 CLI wire contract', () => {
     const wire = requests(25, false)
     messages(wire, 1).push({ role: 'user', content: nonce })
     expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('关联的真实 tool result')
+  })
+
+  it('拒绝 read tool call 的 type 不是 function', () => {
+    const wire = requests()
+    toolCalls(messages(wire, 1)[0]!)[0]!.type = 'not-a-function'
+    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('type 必须为 function')
+  })
+
+  it('拒绝 tool result 位于 assistant read call 之前', () => {
+    const wire = requests()
+    messages(wire, 1).reverse()
+    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('必须位于 assistant read tool call 之后')
+  })
+
+  it('拒绝重复 ID 或多 call 造成的关联多义性', () => {
+    const wire = requests()
+    const calls = toolCalls(messages(wire, 1)[0]!)
+    calls.push(structuredClone(calls[0]!))
+    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('tool call 数量不是 1')
+  })
+
+  it('拒绝同一 read call 的重复 tool result', () => {
+    const wire = requests()
+    messages(wire, 1).push(structuredClone(messages(wire, 1)[1]!))
+    expect(() => verifyM3Requests(wire, prompt, nonce)).toThrow('tool result 数量不是 1')
   })
 })
