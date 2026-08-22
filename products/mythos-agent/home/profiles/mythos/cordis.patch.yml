@@ -15,6 +15,11 @@
     provider: deepseek-official
     model: deepseek-v4-flash
 
+# A one-shot CLI session has no sidebar/title consumer. Disabling the title
+# model call keeps one read-tool turn to the two requests it actually needs.
+- id: session-title-llm
+  disabled: true
+
 - id: system-prompt
   config:
     persona: >-

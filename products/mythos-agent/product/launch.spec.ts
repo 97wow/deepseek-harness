@@ -32,11 +32,12 @@ describe('Mythos 启动器', () => {
     expect(() => createLaunchSpec('web', [], { DEEPSEEK_BASE_URL: 'https://secret@example.test' })).toThrow('凭据')
   })
 
-  it('把发布入口、DSH_HOME 与工作目录限制在解包根目录', () => {
+  it('从解包根加载 runtime/home，但保留调用者工作目录', () => {
     const root = '/outside-consumer/mythos-agent'
-    const paths = releaseLaunchPaths(root)
+    const workspace = '/outside-consumer/user-workspace'
+    const paths = releaseLaunchPaths(root, workspace)
     const spec = createLaunchSpec('headless', ['--dump-config'], {}, paths)
-    for (const runtimePath of [paths.cli, paths.cwd, paths.home, spec.cwd, spec.env.DSH_HOME]) {
+    for (const runtimePath of [paths.cli, paths.home, spec.env.DSH_HOME]) {
       expect(runtimePath).toBeDefined()
       const child = relative(root, runtimePath ?? '')
       expect(isAbsolute(child)).toBe(false)
@@ -44,5 +45,7 @@ describe('Mythos 启动器', () => {
       expect(child.startsWith(`..${sep}`)).toBe(false)
     }
     expect(spec.args[0]).toBe('/outside-consumer/mythos-agent/runtime/dsh/lib/bin.js')
+    expect(paths.cwd).toBe(workspace)
+    expect(spec.cwd).toBe(workspace)
   })
 })

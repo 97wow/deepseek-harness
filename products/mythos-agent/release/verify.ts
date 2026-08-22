@@ -17,7 +17,7 @@ function runReleaseTypecheck(): void {
     '--ignoreConfig', '--noEmit', '--target', 'ES2023', '--module', 'NodeNext',
     '--moduleResolution', 'NodeNext', '--types', 'node',
     'product/launch.ts', 'release/bundle.ts', 'release/check.ts', 'release/consumer.ts',
-    'release/pack.ts', 'release/security.ts', 'release/verify.ts',
+    'release/m3-cli.ts', 'release/pack.ts', 'release/security.ts', 'release/verify.ts',
   ], { cwd: productRoot, stdio: 'inherit', env: process.env })
   if (result.error !== undefined) throw result.error
   if (result.status !== 0) throw new Error(`release typecheck 失败，退出码 ${String(result.status)}`)

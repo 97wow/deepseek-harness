@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { verifyArchiveEntries, verifyExtractedBundle } from './bundle.js'
+import { verifyM3CliMock } from './m3-cli.js'
 
 const outputLimit = 1024 * 1024
 
@@ -103,6 +104,7 @@ export async function smokeExtractedRelease(releaseRoot: string): Promise<void> 
   for (const expected of ['name: Mythos M3', 'model: deepseek-v4-flash', 'You are Mythos Agent']) {
     if (!headless.stdout.includes(expected)) throw new Error(`Mythos consumer Headless 配置缺少 ${expected}`)
   }
+  await verifyM3CliMock(releaseRoot)
   await smokeWeb(releaseRoot, environment)
 }
 

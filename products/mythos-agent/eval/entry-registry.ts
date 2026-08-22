@@ -196,7 +196,8 @@ export const evaluationRuntimeSourceFiles = Object.freeze([
   'flywheel/advanced-journey-gate.ts', 'flywheel/real-repo-scope-gate.ts', 'flywheel/gate-policy.ts', 'flywheel/gate.ts',
   'flywheel/server-dataset.ts', 'flywheel/server-import.ts', 'flywheel/server-analyze.ts', 'flywheel/server-gate.ts',
   'flywheel/session-curation.ts', 'flywheel/session-curate.ts', 'product/config.ts', 'product/launch.ts',
-  'product/smoke-web.ts', 'release/check.ts', 'release/pack.ts', 'release/security.ts', 'release/verify.ts',
+  'product/smoke-web.ts', 'release/check.ts', 'release/consumer.ts', 'release/m3-cli.ts', 'release/pack.ts',
+  'release/security.ts', 'release/verify.ts',
 ] as const)
 
 const typecheckCommand = ['tsc', '--ignoreConfig', '--noEmit', '--target', 'ES2023', '--module', 'NodeNext',

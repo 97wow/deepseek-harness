@@ -31,13 +31,14 @@ const sourcePaths: LaunchPaths = {
 /**
  * Resolve every packaged runtime path beneath one extracted release root.
  * @param releaseRoot - Extracted `mythos-agent` directory.
+ * @param invocationCwd - User workspace from which the packaged CLI was invoked.
  * @returns paths used by the packaged launcher.
  */
-export function releaseLaunchPaths(releaseRoot: string): LaunchPaths {
+export function releaseLaunchPaths(releaseRoot: string, invocationCwd = process.cwd()): LaunchPaths {
   const root = resolve(releaseRoot)
   return {
     cli: join(root, 'runtime', 'dsh', 'lib', 'bin.js'),
-    cwd: root,
+    cwd: resolve(invocationCwd),
     home: join(root, 'home'),
   }
 }
