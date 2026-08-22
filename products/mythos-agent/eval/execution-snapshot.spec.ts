@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { access, chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -15,6 +15,7 @@ import {
   materializeExecutionArtifact,
   readAnchoredArtifactFile,
   readExecutionArtifactManifest,
+  stageWritableProfileModuleFallback,
   verifyExecutionArtifact,
   verifyExecutionSnapshot,
   writeExecutionArtifactManifest,
@@ -111,6 +112,24 @@ async function byteLeakCount(root: string, needles: readonly string[]): Promise<
 }
 
 describe('不可变执行快照', () => {
+  it('只读产品 profile 通过已承诺目录链接维护可写 module fallback', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mythos-profile-fallback-test-'))
+    const profiles = join(root, 'products/mythos-agent/home/profiles')
+    const sessions = join(root, 'products/mythos-agent/home/sessions')
+    const fallback = join(profiles, 'node_modules')
+    await mkdir(profiles, { recursive: true })
+    await stageWritableProfileModuleFallback(root)
+    await stageWritableProfileModuleFallback(root)
+
+    expect(await readlink(fallback)).toBe('../sessions/profile-module-fallback')
+    expect(await realpath(fallback)).toBe(await realpath(join(sessions, 'profile-module-fallback')))
+    await chmod(profiles, 0o555)
+    await mkdir(join(fallback, '@scope/example'), { recursive: true })
+    await writeFile(join(fallback, '@scope/example/package.json'), '{}\n')
+    expect(await readFile(join(sessions, 'profile-module-fallback/@scope/example/package.json'), 'utf8')).toBe('{}\n')
+    expect((await lstat(fallback)).isSymbolicLink()).toBe(true)
+  })
+
   it('绑定整个 tracked tree；工作树变化不影响已锁定提交，新提交改变 SHA', async () => {
     const root = await fixture()
     const first = await commitExecutionSnapshot(root)

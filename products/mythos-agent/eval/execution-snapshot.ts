@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
@@ -62,6 +62,8 @@ export interface ExecutionArtifactParentAnchor {
 }
 
 const mutableRoots = ['products/mythos-agent/home/sessions', 'products/mythos-agent/runs'] as const
+const profileModuleFallback = 'products/mythos-agent/home/profiles/node_modules'
+const mutableProfileModuleFallback = 'products/mythos-agent/home/sessions/profile-module-fallback'
 
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
@@ -238,7 +240,30 @@ async function defaultHooks(): Promise<ExecutionArtifactHooks> {
     async build(root) {
       await run(root, 'pnpm', ['build'])
       await run(join(root, 'products/mythos-agent'), 'pnpm', evaluationRuntimeCompilerArguments)
+      await stageWritableProfileModuleFallback(root)
     },
+  }
+}
+
+/** Routes the CLI-maintained profile dependency fallback into an artifact-owned mutable root. */
+export async function stageWritableProfileModuleFallback(root: string): Promise<void> {
+  const canonicalRoot = await realpath(root)
+  const link = resolve(canonicalRoot, profileModuleFallback)
+  const target = resolve(canonicalRoot, mutableProfileModuleFallback)
+  const relativeTarget = relative(dirname(link), target)
+  if (!inside(canonicalRoot, link) || !inside(canonicalRoot, target) || isAbsolute(relativeTarget)) {
+    throw new Error('profile module fallback 路径逃逸执行产物')
+  }
+  await mkdir(dirname(link), { recursive: true })
+  await mkdir(target, { recursive: true })
+  try {
+    await symlink(relativeTarget, link, 'dir')
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error
+    const information = await lstat(link)
+    if (!information.isSymbolicLink() || await readlink(link) !== relativeTarget) {
+      throw new Error('profile module fallback 已被非预期路径占用')
+    }
   }
 }
 
@@ -410,6 +435,7 @@ export async function materializeExecutionArtifact(
   const files = await artifactInventory(destination)
   const build = { commands: ['pnpm install --offline --frozen-lockfile --ignore-scripts', 'pnpm build',
     `pnpm --dir products/mythos-agent ${evaluationRuntimeCompilerArguments.join(' ')}`,
+    'internal:route-profile-module-fallback-to-mutable-root-v1',
     'internal:normalize-pnpm-shims-and-generated-debug-paths-v2'],
     nodeVersion: process.version, pnpmVersion }
   const identity = { build, files, mutableRoots, source }
