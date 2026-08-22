@@ -9,7 +9,8 @@
   "mythos": {
     "dshVersion": "0.1.0-rc.8",
     "dshCommit": "141eb6fef83422698aef7a981029e843e8161534",
-    "dshRepository": "https://github.com/deepseek-ai/deepseek-harness.git"
+    "dshRepository": "https://github.com/deepseek-ai/deepseek-harness.git",
+    "runtimeClosure": "bundled-from-frozen-lockfile"
   },
   "scripts": {
     "agent": "tsx product/launch.ts headless",

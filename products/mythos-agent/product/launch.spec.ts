@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createLaunchSpec } from './launch.js'
+import { isAbsolute, relative, sep } from 'node:path'
+import { createLaunchSpec, releaseLaunchPaths } from './launch.js'
 
 describe('Mythos 启动器', () => {
   it('以 loopback 和固定端口安全启动 Web Profile', () => {
@@ -29,5 +30,19 @@ describe('Mythos 启动器', () => {
     expect(() => createLaunchSpec('headless', [], {})).toThrow('任务内容')
     expect(() => createLaunchSpec('web', [], { DEEPSEEK_BASE_URL: 'http://example.test' })).toThrow('HTTPS')
     expect(() => createLaunchSpec('web', [], { DEEPSEEK_BASE_URL: 'https://secret@example.test' })).toThrow('凭据')
+  })
+
+  it('把发布入口、DSH_HOME 与工作目录限制在解包根目录', () => {
+    const root = '/outside-consumer/mythos-agent'
+    const paths = releaseLaunchPaths(root)
+    const spec = createLaunchSpec('headless', ['--dump-config'], {}, paths)
+    for (const runtimePath of [paths.cli, paths.cwd, paths.home, spec.cwd, spec.env.DSH_HOME]) {
+      expect(runtimePath).toBeDefined()
+      const child = relative(root, runtimePath ?? '')
+      expect(isAbsolute(child)).toBe(false)
+      expect(child).not.toBe('..')
+      expect(child.startsWith(`..${sep}`)).toBe(false)
+    }
+    expect(spec.args[0]).toBe('/outside-consumer/mythos-agent/runtime/dsh/lib/bin.js')
   })
 })

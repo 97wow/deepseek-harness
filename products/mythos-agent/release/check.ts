@@ -11,6 +11,7 @@ interface ProductManifest {
     dshCommit: string
     dshRepository: string
     dshVersion: string
+    runtimeClosure: string
   }
   version: string
 }
@@ -56,6 +57,9 @@ function verifyPinnedDsh(manifest: ProductManifest): void {
   if (manifest.mythos.dshCommit !== taggedCommit) throw new Error('Mythos 固定的 DSH 提交与版本标签不一致')
   if (manifest.mythos.dshRepository !== 'https://github.com/deepseek-ai/deepseek-harness.git') {
     throw new Error('Mythos 的 DSH 上游地址不正确')
+  }
+  if (manifest.mythos.runtimeClosure !== 'bundled-from-frozen-lockfile') {
+    throw new Error('Mythos 发布包必须携带 frozen lockfile 生成的 DSH 运行闭包')
   }
 }
 
