@@ -15,7 +15,9 @@ import {
   materializeExecutionArtifact,
   readAnchoredArtifactFile,
   readExecutionArtifactManifest,
+  resetWritableProfileRootConfig,
   stageWritableProfileModuleFallback,
+  stageWritableProfileRootConfig,
   verifyExecutionArtifact,
   verifyExecutionSnapshot,
   writeExecutionArtifactManifest,
@@ -112,6 +114,71 @@ async function byteLeakCount(root: string, needles: readonly string[]): Promise<
 }
 
 describe('不可变执行快照', () => {
+  it('只读产品 profile 通过已承诺模板重复写入 cordis 根配置', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mythos-profile-config-test-'))
+    const profiles = join(root, 'products/mythos-agent/home/profiles')
+    const config = join(profiles, 'mythos/cordis.yml')
+    const target = join(root, 'products/mythos-agent/home/sessions/profile-runtime/mythos/cordis.yml')
+    await mkdir(dirname(config), { recursive: true })
+    await writeFile(config, '# committed profile root\n[]\n')
+    await stageWritableProfileRootConfig(root)
+    await stageWritableProfileRootConfig(root)
+
+    expect(await readlink(config)).toBe('../../sessions/profile-runtime/mythos/cordis.yml')
+    await chmod(join(profiles, 'mythos'), 0o555)
+    await writeFile(target, 'tampered mutable bytes\n')
+    await resetWritableProfileRootConfig(root)
+    expect(await readFile(config, 'utf8')).toBe('# committed profile root\n[]\n')
+    await writeFile(config, '# CLI rewrite\n[]\n')
+    expect(await readFile(target, 'utf8')).toBe('# CLI rewrite\n[]\n')
+    await resetWritableProfileRootConfig(root)
+    expect(await readFile(target, 'utf8')).toBe('# committed profile root\n[]\n')
+  })
+
+  it('拒绝非预期 profile root config 占用', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mythos-profile-config-occupied-test-'))
+    const config = join(root, 'products/mythos-agent/home/profiles/mythos/cordis.yml')
+    await mkdir(config, { recursive: true })
+    await expect(stageWritableProfileRootConfig(root)).rejects.toThrow('非预期路径占用')
+  })
+
+  it('拒绝 mutable cordis target symlink 且不改写执行根外字节', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mythos-profile-config-target-link-test-'))
+    const outside = await mkdtemp(join(tmpdir(), 'mythos-profile-config-protected-'))
+    const config = join(root, 'products/mythos-agent/home/profiles/mythos/cordis.yml')
+    const target = join(root, 'products/mythos-agent/home/sessions/profile-runtime/mythos/cordis.yml')
+    const protectedFile = join(outside, 'protected.yml')
+    const sentinel = Buffer.from([0x00, 0x53, 0x45, 0x4e, 0x54, 0x49, 0x4e, 0x45, 0x4c, 0xff])
+    await mkdir(dirname(config), { recursive: true })
+    await writeFile(config, '# committed profile root\n[]\n')
+    await stageWritableProfileRootConfig(root)
+    await writeFile(protectedFile, sentinel)
+    await rm(target)
+    await symlink(protectedFile, target)
+
+    await expect(resetWritableProfileRootConfig(root)).rejects.toThrow('可写目标类型或真实路径无效')
+    expect(await readFile(protectedFile)).toEqual(sentinel)
+  })
+
+  it('拒绝 mutable cordis 既有父目录 symlink 且不改写执行根外字节', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mythos-profile-config-parent-link-test-'))
+    const outside = await mkdtemp(join(tmpdir(), 'mythos-profile-config-parent-protected-'))
+    const config = join(root, 'products/mythos-agent/home/profiles/mythos/cordis.yml')
+    const runtime = join(root, 'products/mythos-agent/home/sessions/profile-runtime')
+    const protectedFile = join(outside, 'mythos/cordis.yml')
+    const sentinel = Buffer.from([0xff, 0x50, 0x41, 0x52, 0x45, 0x4e, 0x54, 0x00])
+    await mkdir(dirname(config), { recursive: true })
+    await writeFile(config, '# committed profile root\n[]\n')
+    await stageWritableProfileRootConfig(root)
+    await rm(runtime, { recursive: true })
+    await mkdir(dirname(protectedFile), { recursive: true })
+    await writeFile(protectedFile, sentinel)
+    await symlink(outside, runtime, 'dir')
+
+    await expect(resetWritableProfileRootConfig(root)).rejects.toThrow('可写父目录类型或真实路径无效')
+    expect(await readFile(protectedFile)).toEqual(sentinel)
+  })
+
   it('只读产品 profile 通过已承诺目录链接维护可写 module fallback', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mythos-profile-fallback-test-'))
     const profiles = join(root, 'products/mythos-agent/home/profiles')

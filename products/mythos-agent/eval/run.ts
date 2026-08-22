@@ -9,6 +9,7 @@ import { buildAttestedEvaluationReport } from './report-contract.js'
 import { readObservedProviderEvidence, type CaseRuntimeEvidence, type ProviderResponseObservation } from './runtime-evidence.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
 import { evaluationRuntimePaths } from './runtime-paths.js'
+import { resetWritableProfileRootConfig } from './execution-snapshot.js'
 
 interface CaseResult {
   behaviorVerification: VerificationResult
@@ -286,6 +287,7 @@ async function main(): Promise<void> {
     process.env.MYTHOS_EVAL_REPLAY_ITERATION,
     process.env.MYTHOS_EVAL_REPLAY_TOTAL,
   )
+  await resetWritableProfileRootConfig(repoRoot)
   const [dshManifest, mythosManifest, configHash] = await Promise.all([
     readJson(join(repoRoot, 'package.json')),
     readJson(join(productRoot, 'package.json')),

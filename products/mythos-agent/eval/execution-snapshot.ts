@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { chmod, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
@@ -64,6 +65,9 @@ export interface ExecutionArtifactParentAnchor {
 const mutableRoots = ['products/mythos-agent/home/sessions', 'products/mythos-agent/runs'] as const
 const profileModuleFallback = 'products/mythos-agent/home/profiles/node_modules'
 const mutableProfileModuleFallback = 'products/mythos-agent/home/sessions/profile-module-fallback'
+const profileRootConfig = 'products/mythos-agent/home/profiles/mythos/cordis.yml'
+const profileRootConfigTemplate = 'products/mythos-agent/.mythos-eval-runtime/profile-root/mythos-cordis.yml'
+const mutableProfileRootConfig = 'products/mythos-agent/home/sessions/profile-runtime/mythos/cordis.yml'
 
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
@@ -241,6 +245,7 @@ async function defaultHooks(): Promise<ExecutionArtifactHooks> {
       await run(root, 'pnpm', ['build'])
       await run(join(root, 'products/mythos-agent'), 'pnpm', evaluationRuntimeCompilerArguments)
       await stageWritableProfileModuleFallback(root)
+      await stageWritableProfileRootConfig(root)
     },
   }
 }
@@ -265,6 +270,127 @@ export async function stageWritableProfileModuleFallback(root: string): Promise<
       throw new Error('profile module fallback 已被非预期路径占用')
     }
   }
+}
+
+function profileRootConfigPaths(root: string): {
+  link: string
+  relativeTarget: string
+  target: string
+  template: string
+} {
+  const link = resolve(root, profileRootConfig)
+  const target = resolve(root, mutableProfileRootConfig)
+  const template = resolve(root, profileRootConfigTemplate)
+  const relativeTarget = relative(dirname(link), target)
+  if (![link, target, template].every(path => inside(root, path)) || isAbsolute(relativeTarget)) {
+    throw new Error('profile root config 路径逃逸执行产物')
+  }
+  return { link, relativeTarget, target, template }
+}
+
+function missingPath(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT'
+}
+
+async function ensureUnlinkedDirectoryChain(root: string, directory: string): Promise<void> {
+  if (!inside(root, directory)) throw new Error('profile root config 可写父目录逃逸执行产物')
+  const path = relative(root, directory)
+  let current = root
+  for (const segment of path === '' ? [] : path.split(sep)) {
+    current = resolve(current, segment)
+    try {
+      await mkdir(current, { mode: 0o700 })
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error
+    }
+    const information = await lstat(current)
+    if (!information.isDirectory() || information.isSymbolicLink() || await realpath(current) !== current) {
+      throw new Error('profile root config 可写父目录类型或真实路径无效')
+    }
+  }
+}
+
+async function readRegularFileNoFollow(path: string, label: string): Promise<Buffer> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const [handleInformation, pathInformation, canonicalPath] = await Promise.all([
+      handle.stat(), lstat(path), realpath(path),
+    ])
+    if (!handleInformation.isFile() || handleInformation.nlink !== 1 || !pathInformation.isFile()
+      || pathInformation.isSymbolicLink() || pathInformation.dev !== handleInformation.dev
+      || pathInformation.ino !== handleInformation.ino || canonicalPath !== path) {
+      throw new Error(`${label} 类型或真实路径无效`)
+    }
+    return await handle.readFile()
+  } finally {
+    await handle.close()
+  }
+}
+
+async function writeMutableProfileRootConfig(root: string, target: string, contents: Buffer): Promise<void> {
+  await ensureUnlinkedDirectoryChain(root, dirname(target))
+  let expected: Awaited<ReturnType<typeof lstat>> | null
+  try {
+    expected = await lstat(target)
+  } catch (error) {
+    if (!missingPath(error)) throw error
+    expected = null
+  }
+  if (expected !== null && (!expected.isFile() || expected.isSymbolicLink() || expected.nlink !== 1
+    || await realpath(target) !== target)) {
+    throw new Error('profile root config 可写目标类型或真实路径无效')
+  }
+  const flags = constants.O_WRONLY | constants.O_NOFOLLOW
+    | (expected === null ? constants.O_CREAT | constants.O_EXCL : 0)
+  const handle = await open(target, flags, 0o600)
+  try {
+    const [handleInformation, pathInformation, canonicalTarget] = await Promise.all([
+      handle.stat(), lstat(target), realpath(target),
+    ])
+    if (!handleInformation.isFile() || handleInformation.nlink !== 1 || !pathInformation.isFile()
+      || pathInformation.isSymbolicLink() || pathInformation.dev !== handleInformation.dev
+      || pathInformation.ino !== handleInformation.ino || canonicalTarget !== target
+      || (expected !== null && (expected.dev !== handleInformation.dev || expected.ino !== handleInformation.ino))) {
+      throw new Error('profile root config 可写目标在打开时发生替换')
+    }
+    await handle.chmod(0o600)
+    await handle.truncate(0)
+    await handle.write(contents, 0, contents.length, 0)
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+}
+
+/** Stages the writable profile root config behind a committed relative link and immutable template. */
+export async function stageWritableProfileRootConfig(root: string): Promise<void> {
+  const canonicalRoot = await realpath(root)
+  const paths = profileRootConfigPaths(canonicalRoot)
+  let contents: Buffer
+  const information = await lstat(paths.link)
+  if (information.isFile() && !information.isSymbolicLink()) {
+    contents = await readRegularFileNoFollow(paths.link, 'profile root config 源文件')
+    await mkdir(dirname(paths.template), { recursive: true })
+    await writeFile(paths.template, contents)
+    await unlink(paths.link)
+    await symlink(paths.relativeTarget, paths.link)
+  } else if (information.isSymbolicLink() && await readlink(paths.link) === paths.relativeTarget) {
+    contents = await readRegularFileNoFollow(paths.template, 'profile root config 模板')
+  } else throw new Error('profile root config 已被非预期路径占用')
+  await writeMutableProfileRootConfig(canonicalRoot, paths.target, contents)
+}
+
+/** Restores the mutable profile root config from its artifact-committed template before evaluation. */
+export async function resetWritableProfileRootConfig(root: string): Promise<void> {
+  const canonicalRoot = await realpath(root)
+  const paths = profileRootConfigPaths(canonicalRoot)
+  const [linkInformation, templateInformation] = await Promise.all([lstat(paths.link), lstat(paths.template)])
+  if (!linkInformation.isSymbolicLink() || await readlink(paths.link) !== paths.relativeTarget
+    || !templateInformation.isFile() || templateInformation.isSymbolicLink()) {
+    throw new Error('profile root config 可写路由与执行产物不一致')
+  }
+  const contents = await readRegularFileNoFollow(paths.template, 'profile root config 模板')
+  await writeMutableProfileRootConfig(canonicalRoot, paths.target, contents)
 }
 
 function replaceBytes(contents: Buffer, needle: Buffer, replacement: Buffer): Buffer<ArrayBuffer> {
@@ -436,6 +562,7 @@ export async function materializeExecutionArtifact(
   const build = { commands: ['pnpm install --offline --frozen-lockfile --ignore-scripts', 'pnpm build',
     `pnpm --dir products/mythos-agent ${evaluationRuntimeCompilerArguments.join(' ')}`,
     'internal:route-profile-module-fallback-to-mutable-root-v1',
+    'internal:route-profile-root-config-to-mutable-root-v1',
     'internal:normalize-pnpm-shims-and-generated-debug-paths-v2'],
     nodeVersion: process.version, pnpmVersion }
   const identity = { build, files, mutableRoots, source }
