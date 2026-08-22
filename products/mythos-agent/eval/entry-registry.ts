@@ -72,7 +72,7 @@ const evaluationEntryDefinitions: readonly (readonly [EvaluationEntryId, Evaluat
     commitment: 'standard', load: async () => await import('./run.js'),
     parameters: { caseIds: true, options: noOptions }, environment: immutableMap([['MYTHOS_EVAL_SUITE', 'all']]),
     visibility: 'public',
-    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts'],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/runtime-paths.ts'],
   }],
   ['journey', {
     commitment: 'journey', load: async () => await import('./run-journeys.js'),
@@ -96,7 +96,7 @@ const evaluationEntryDefinitions: readonly (readonly [EvaluationEntryId, Evaluat
     fixedCaseIds: Object.freeze(['exact-file']),
     smokePolicy: Object.freeze({ attempts: 1, concurrency: 1, maxRetries: 0, maxTokens: 4096, timeoutMs: 120000 }),
     visibility: 'public',
-    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/runtime-evidence.ts',
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/runtime-paths.ts', 'eval/runtime-evidence.ts',
       'eval/runtime-evidence-observer.ts', 'eval/overlays/runtime-evidence.yml', 'eval/overlays/m3-smoke.yml'],
   }],
   ['qwen-local', {
@@ -109,7 +109,8 @@ const evaluationEntryDefinitions: readonly (readonly [EvaluationEntryId, Evaluat
     ]),
     environmentDefaults: immutableMap([['MYTHOS_EVAL_TIMEOUT_MS', '600000']]),
     visibility: 'public',
-    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/overlays/qwen-local.yml'],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/runtime-paths.ts',
+      'eval/overlays/qwen-local.yml'],
   }],
   ['qwen-local-benchmark', {
     commitment: 'qwen-local', load: async () => await import('./qwen-local-benchmark.js'),
@@ -126,13 +127,13 @@ const evaluationEntryDefinitions: readonly (readonly [EvaluationEntryId, Evaluat
     commitment: 'standard', load: async () => await import('./repeat.js'),
     parameters: { caseIds: true, options: immutableMap([['suite', Object.freeze(['all'])]]) },
     environment: immutableMap([['MYTHOS_EVAL_SUITE', 'release']]), visibility: 'public',
-    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts'],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/run.ts', 'eval/runtime-paths.ts'],
   }],
   ['standard', {
     commitment: 'standard', load: async () => await import('./run.js'),
     parameters: { caseIds: true, options: noOptions }, environment: immutableMap([['MYTHOS_EVAL_SUITE', 'release']]),
     visibility: 'public',
-    internalDependencies: ['eval/cases.ts', 'eval/options.ts'],
+    internalDependencies: ['eval/cases.ts', 'eval/options.ts', 'eval/runtime-paths.ts'],
   }],
 ]
 

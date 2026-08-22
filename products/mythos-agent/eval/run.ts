@@ -3,12 +3,12 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { selectEvaluationSuite, type EvaluationCase, type VerificationResult } from './cases.js'
 import { parseEvaluationModel, parseEvaluationTimeoutMs, parseReplayMetadata } from './options.js'
 import { buildAttestedEvaluationReport } from './report-contract.js'
 import { readObservedProviderEvidence, type CaseRuntimeEvidence, type ProviderResponseObservation } from './runtime-evidence.js'
 import { readCompressedSessionMetrics, type SessionMetrics } from './session-metrics.js'
+import { evaluationRuntimePaths } from './runtime-paths.js'
 
 interface CaseResult {
   behaviorVerification: VerificationResult
@@ -61,8 +61,7 @@ interface EvaluationReport {
   }
 }
 
-const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const repoRoot = resolve(productRoot, '..', '..')
+const { productRoot, repoRoot } = evaluationRuntimePaths(import.meta.url)
 const dshHome = join(productRoot, 'home')
 const sessionsRoot = join(dshHome, 'sessions')
 const cliPath = join(repoRoot, 'apps', 'cli', 'lib', 'bin.js')
