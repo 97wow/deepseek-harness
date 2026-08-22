@@ -237,6 +237,24 @@ function objectRows(value: unknown, label: string): Array<Record<string, unknown
   return value as Array<Record<string, unknown>>
 }
 
+function objectValue(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Mythos M3 mock ${label} 不是对象`)
+  }
+  return value as Record<string, unknown>
+}
+
+function readCallArguments(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string') throw new Error('Mythos M3 mock read tool call arguments 不是 JSON 字符串')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    throw new Error('Mythos M3 mock read tool call arguments 不是有效 JSON')
+  }
+  return objectValue(parsed, 'read tool call arguments')
+}
+
 /** Assert the two OpenAI-compatible requests prove persona, tool execution, and continuation. */
 export function verifyM3Requests(requests: readonly MockRequest[], prompt: string, nonce: string): void {
   if (requests.length !== 2) throw new Error(`Mythos M3 mock 请求数应为 2，实际 ${String(requests.length)}`)
@@ -246,17 +264,39 @@ export function verifyM3Requests(requests: readonly MockRequest[], prompt: strin
   if (first.model !== expectedModel || second.model !== expectedModel) throw new Error('Mythos M3 mock 未使用 deepseek-v4-flash')
   const firstMessages = objectRows(first.messages, '首请求 messages')
   const secondMessages = objectRows(second.messages, '次请求 messages')
-  const firstText = JSON.stringify(firstMessages)
-  if (!firstText.includes('You are Mythos Agent')) throw new Error('Mythos M3 mock 首请求缺少 MYTHOS persona')
-  if (!firstText.includes(prompt)) throw new Error('Mythos M3 mock 首请求缺少用户 prompt')
+  const systemMessage = firstMessages.find(message => message.role === 'system'
+    && typeof message.content === 'string' && message.content.includes('You are Mythos Agent'))
+  if (systemMessage === undefined) throw new Error('Mythos M3 mock 首请求缺少正确 role 的 MYTHOS persona')
+  const userMessage = firstMessages.find(message => message.role === 'user' && message.content === prompt)
+  if (userMessage === undefined) throw new Error('Mythos M3 mock 首请求缺少正确 role 的用户 prompt')
   const tools = objectRows(first.tools, '首请求 tools')
   if (tools.length !== expectedToolCount) {
     throw new Error(`Mythos M3 mock 工具 schema 应为 ${String(expectedToolCount)}，实际 ${String(tools.length)}`)
   }
-  if (!JSON.stringify(tools).includes('"name":"read"')) throw new Error('Mythos M3 mock 工具 schema 缺少 read')
-  const secondText = JSON.stringify(secondMessages)
-  if (!secondText.includes('mythos-read-proof') || !secondText.includes(nonce)) {
-    throw new Error('Mythos M3 mock 次请求缺少真实 read tool result')
+  const readSchema = tools.find(tool => tool.type === 'function'
+    && tool.function !== null && typeof tool.function === 'object' && !Array.isArray(tool.function)
+    && (tool.function as Record<string, unknown>).name === 'read')
+  if (readSchema === undefined) throw new Error('Mythos M3 mock 工具 schema 缺少 read')
+
+  let readCallId: string | undefined
+  for (const message of secondMessages.filter(row => row.role === 'assistant')) {
+    if (!Array.isArray(message.tool_calls)) continue
+    for (const call of objectRows(message.tool_calls, 'assistant tool_calls')) {
+      const implementation = objectValue(call.function, 'assistant tool call function')
+      if (implementation.name !== 'read') continue
+      if (typeof call.id !== 'string' || call.id.trim() === '') throw new Error('Mythos M3 mock read tool call 缺少有效 id')
+      const argumentsValue = readCallArguments(implementation.arguments)
+      if (argumentsValue.file_path !== 'proof.txt') throw new Error('Mythos M3 mock read tool call 未指向 proof.txt')
+      readCallId = call.id
+      break
+    }
+    if (readCallId !== undefined) break
+  }
+  if (readCallId === undefined) throw new Error('Mythos M3 mock 次请求缺少 assistant read tool call')
+  const toolResult = secondMessages.find(message => message.role === 'tool'
+    && message.tool_call_id === readCallId && typeof message.content === 'string' && message.content.includes(nonce))
+  if (toolResult === undefined) {
+    throw new Error('Mythos M3 mock 次请求缺少与 read call id 关联的真实 tool result')
   }
 }
 
