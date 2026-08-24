@@ -23,8 +23,8 @@ type WebRowProps = ToolCallViewProps & PropsLocale<'conversation'>
 
 /** web_fetch reads one URL; web_search queries. Titles are figma literals. */
 const WEB_TITLES: Record<string, string> = {
-  web_search: 'Search',
-  web_fetch: 'Fetch',
+  web_search: '搜索',
+  web_fetch: '读取',
 }
 
 /**

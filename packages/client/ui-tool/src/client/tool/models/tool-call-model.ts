@@ -22,8 +22,8 @@ export type ToolRowState = 'running' | 'ok' | 'error' | 'stopped'
 
 /** Figma row titles per variant (design literals, not translatable copy). */
 export const VARIANT_TITLES: Record<ToolRowVariant, string> = {
-  search: 'Search', read: 'Read', bash: 'Bash',
-  write: 'Write', edit: 'Edit', code: 'Code', others: 'Tool call',
+  search: '搜索', read: '读取', bash: '运行命令',
+  write: '修改', edit: '修改', code: '执行代码', others: '工具调用',
 }
 
 /**
@@ -66,7 +66,7 @@ const TOOL_TITLES: Record<string, string> = {
   cordis_run: 'Run Cordis Plugin',
   cordis_stop: 'Stop Cordis Plugin',
   cordis_undefine: 'Remove Cordis Plugin',
-  pwsh: 'Pwsh',
+  pwsh: '运行命令',
 }
 
 /**

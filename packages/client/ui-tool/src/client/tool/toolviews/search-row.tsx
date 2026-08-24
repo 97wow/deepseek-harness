@@ -24,8 +24,8 @@ import { CONVERSATION_NS as NS } from '../../locale.ts'
 type SearchRowProps = ToolCallViewProps & PropsLocale<'conversation'>
 
 const SEARCH_TITLES: Record<string, string> = {
-  grep: 'Grep',
-  glob: 'Glob',
+  grep: '搜索',
+  glob: '搜索',
 }
 
 /**

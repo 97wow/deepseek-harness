@@ -101,6 +101,22 @@ body {
 }
 .mythos-settings h2 { margin: 0 0 5px; font: 600 18px/1.3 -apple-system, sans-serif; }
 .mythos-settings p { margin: 0 0 20px; color: #8499ab; font-size: 12px; line-height: 1.55; }
+.mythos-settings__service {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px;
+  margin-top: 18px; padding: 13px 14px; border: 1px solid #2d4256; border-radius: 10px; background: #0d1825;
+}
+.mythos-settings__service div { display: grid; gap: 3px; }
+.mythos-settings__service strong { color: #dce7f2; font-size: 13px; }
+.mythos-settings__service span { color: #86aeca; font-size: 11px; }
+.mythos-settings__service button { white-space: nowrap; }
+.mythos-settings p.mythos-settings__result { margin: 9px 2px 18px; }
+.mythos-settings__advanced { border-top: 1px solid #2d4256; padding-top: 13px; }
+.mythos-settings__advanced summary { color: #9fb2c3; font-size: 12px; cursor: pointer; }
+.mythos-settings__advanced[open] summary { margin-bottom: 14px; }
+.mythos-settings__technical { display: grid; gap: 6px; margin: 0 0 13px; font-size: 11px; }
+.mythos-settings__technical div { display: grid; grid-template-columns: 72px 1fr; }
+.mythos-settings__technical dt { color: #71899d; }
+.mythos-settings__technical dd { margin: 0; color: #b9c9d5; font-family: ui-monospace, SFMono-Regular, monospace; }
 .mythos-settings label { display: grid; gap: 7px; margin-top: 13px; color: #aebfcd; font-size: 12px; }
 .mythos-settings input {
   width: 100%; padding: 9px 10px; box-sizing: border-box; border: 1px solid #344b60;
@@ -110,6 +126,13 @@ body {
 .mythos-settings__foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
 .mythos-settings__foot button { border: 1px solid #344b60; border-radius: 8px; padding: 8px 13px; background: #172436; color: #dce7f2; cursor: pointer; }
 .mythos-settings__foot button[data-primary] { border-color: #729ab7; background: #668eaa; color: #07111b; font-weight: 650; }
+
+[data-mythos-single-service] { display: none !important; }
+[data-mythos-context-label] {
+  opacity: .68 !important; cursor: default !important; border-color: transparent !important;
+  background: transparent !important; box-shadow: none !important;
+}
+[data-mythos-context-label] svg:last-child { display: none !important; }
 
 /* MYTHOS execution spine: tool rows read as a temporal ledger rather than isolated cards. */
 [data-slot="conversation.chat.node"]:has([data-tool-call]) {

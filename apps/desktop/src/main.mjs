@@ -42,6 +42,12 @@ async function ensureHome() {
     await mkdir(home, { recursive: true })
     await cp(sourceHome(), home, { recursive: true })
   }
+  // Product-owned display metadata advances with the Desktop build while
+  // sessions, user presets, credentials, and local settings remain untouched.
+  const bundledPreset = join(sourceHome(), '.agent-presets', 'mythos', 'preset.yml')
+  const installedPreset = join(home, '.agent-presets', 'mythos', 'preset.yml')
+  await mkdir(dirname(installedPreset), { recursive: true })
+  await cp(bundledPreset, installedPreset)
   return home
 }
 
@@ -245,9 +251,12 @@ async function createWindow() {
 }
 
 ipcMain.handle('mythos:settings:get', async () => {
-  const settings = await readSettings()
+  const settings = await resolvedEnvironment()
   return { endpoint: settings.endpoint, hasKey: settings.key !== '' }
 })
+ipcMain.handle('mythos:settings:test', async () => ({
+  ok: hostProcess !== undefined && hostProcess.exitCode === null,
+}))
 ipcMain.handle('mythos:settings:save', async (_event, input) => {
   if (typeof input !== 'object' || input === null || typeof input.endpoint !== 'string' || typeof input.key !== 'string') {
     throw new Error('设置格式无效')
