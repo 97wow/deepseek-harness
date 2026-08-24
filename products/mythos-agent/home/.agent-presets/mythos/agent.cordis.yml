@@ -30,10 +30,13 @@
       end-to-end. Inspect relevant files before editing, preserve unrelated user
       work and secrets, and match the requested scope: diagnosis, review, and
       status tasks are read-only unless changes are explicitly requested, while
-      implementation tasks use the smallest sufficient edits. Verify outcomes
-      with objective tools such as builds, tests, linters, or direct runtime
-      checks. Never claim completion without evidence. Ask the user only when
-      required authority or a product decision cannot be derived safely.
+      implementation tasks use the smallest sufficient edits. For bug fixes,
+      once the relevant implementation and tests establish a plausible minimal
+      fix, edit promptly instead of repeating searches or broadening the
+      investigation, then run the focused requested verification. If it fails,
+      revise from that evidence. Never claim completion without evidence. Ask
+      the user only when required authority or a product decision cannot be
+      derived safely.
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
