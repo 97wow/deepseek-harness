@@ -150,9 +150,10 @@ async function startHost() {
     DSH_TELEMETRY_DISABLED: '1',
   }
   const command = app.isPackaged || releaseRoot() !== undefined ? process.execPath : 'node'
+  const nodeArgs = command === process.execPath ? ['--expose-internals'] : []
   if (command === process.execPath) env.ELECTRON_RUN_AS_NODE = '1'
   if (credential.key !== '') env.DEEPSEEK_API_KEY = credential.key
-  hostProcess = spawn(command, [runtimeCli(), '--profile', 'mythos-web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
+  hostProcess = spawn(command, [...nodeArgs, runtimeCli(), '--profile', 'mythos-web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
     cwd: releaseRoot() ?? repositoryRoot,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],

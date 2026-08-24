@@ -6,7 +6,7 @@
   "main": "src/bootstrap.cjs",
   "scripts": {
     "dev": "electron .",
-    "pack:mac": "electron-builder --mac dir dmg --arm64 --config electron-builder.config.mjs"
+    "pack:mac": "node scripts/prepare-runtime.mjs && electron-builder --mac dir dmg --arm64 --config electron-builder.config.mjs"
   },
   "devDependencies": {
     "electron": "^43.4.0",
