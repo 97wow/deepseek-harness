@@ -123,6 +123,7 @@ async function runProcess(
   const evidencePath = join(tmpdir(), `mythos-runtime-evidence-${randomUUID()}.ndjson`)
   const result = await new Promise<{ exitCode: number, timedOut: boolean }>((resolvePromise, reject) => {
     const args = [
+      '--expose-internals',
       cliPath,
       '--profile',
       'mythos',
