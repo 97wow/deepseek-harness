@@ -18,7 +18,7 @@ export function interactiveBanner(version: string, cwd: string, permissionMode: 
 }
 
 export function interactiveTurnArgs(task: string, sessionId?: string): string[] {
-  return sessionId === undefined ? [task] : ['--resume', sessionId, task]
+  return sessionId === undefined ? ['--emit-session-id', task] : ['--resume', sessionId, task]
 }
 
 async function runTurn(spec: LaunchSpec): Promise<InteractiveTurnResult> {

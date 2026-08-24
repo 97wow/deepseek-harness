@@ -20,13 +20,6 @@
 - id: session-title-llm
   disabled: true
 
-- id: headless-runner
-  inject: [headlessStartup]
-  config:
-    emitSessionId: true
-    resumeSessionId: !!js ctx.headlessStartup.resumeSessionId
-    task: !!js ctx.headlessStartup.task
-
 - id: system-prompt
   config:
     persona: >-

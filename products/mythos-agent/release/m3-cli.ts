@@ -95,12 +95,23 @@ function cleanEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return environment
 }
 
-async function runCli(entry: string, cwd: string, environment: NodeJS.ProcessEnv, prompt: string): Promise<ChildResult> {
-  const child = spawn(process.execPath, [entry, 'headless', prompt], {
+async function runProcess(
+  entry: string,
+  args: readonly string[],
+  cwd: string,
+  environment: NodeJS.ProcessEnv,
+  input?: string,
+): Promise<ChildResult> {
+  const child = spawn(process.execPath, [entry, ...args], {
     cwd,
     env: environment,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   })
+  if (child.stdout === null || child.stderr === null || (input !== undefined && child.stdin === null)) {
+    child.kill('SIGKILL')
+    throw new Error('Mythos M3 CLI 子进程缺少预期 stdio pipe')
+  }
+  if (input !== undefined) child.stdin?.end(input)
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', (chunk: Buffer) => { stdout = appendBounded(stdout, chunk) })
@@ -119,6 +130,19 @@ async function runCli(entry: string, cwd: string, environment: NodeJS.ProcessEnv
       resolve({ code, stderr, stdout })
     })
   })
+}
+
+async function runCli(entry: string, cwd: string, environment: NodeJS.ProcessEnv, prompt: string): Promise<ChildResult> {
+  return await runProcess(entry, ['headless', prompt], cwd, environment)
+}
+
+async function runInteractiveCli(
+  entry: string,
+  cwd: string,
+  environment: NodeJS.ProcessEnv,
+  prompt: string,
+): Promise<ChildResult> {
+  return await runProcess(entry, [], cwd, environment, `${prompt}\n/exit\n`)
 }
 
 function writeSse(response: ServerResponse, value: unknown): void {
@@ -372,6 +396,7 @@ export async function verifyM3CliMock(releaseRoot: string): Promise<void> {
   await mkdir(workspace)
   await writeFile(join(workspace, 'proof.txt'), `${nonce}\n`, { mode: 0o444 })
   const mock = await startHttpsMock(root, credential, nonce)
+  let interactiveMock: MockServer | undefined
   const entry = join(releaseRoot, 'bin', 'mythos.js')
   const environment = cleanEnvironment(process.env)
   environment.HOME = join(releaseRoot, 'home')
@@ -408,7 +433,37 @@ export async function verifyM3CliMock(releaseRoot: string): Promise<void> {
       throw new Error('Mythos M3 CLI 缺少 key 时未给出可操作提示')
     }
     assertNoSensitiveEvidence([missing.stdout, missing.stderr], credential)
+
+    const interactiveRoot = join(root, 'interactive')
+    await mkdir(interactiveRoot)
+    interactiveMock = await startHttpsMock(interactiveRoot, credential, nonce)
+    const interactiveEnvironment = {
+      ...environment,
+      DEEPSEEK_BASE_URL: interactiveMock.baseUrl,
+      NODE_EXTRA_CA_CERTS: join(interactiveRoot, 'localhost.crt'),
+    }
+    const beforeInteractive = new Set(await collectSessionFiles(sessionsRoot))
+    const interactive = await runInteractiveCli(entry, workspace, interactiveEnvironment, prompt)
+    const interactiveSessions = (await collectSessionFiles(sessionsRoot)).filter(path => !beforeInteractive.has(path))
+    if (interactive.code !== 0) throw new Error(`Mythos M3 mock interactive CLI 退出 ${String(interactive.code)}：${interactive.stderr}`)
+    for (const expected of ['MYTHOS Agent', 'mythos> ', '正在连接 M3 / 处理中…', `MYTHOS_M3_MOCK_OK:${nonce}`]) {
+      if (!interactive.stdout.includes(expected)) throw new Error(`Mythos M3 mock interactive stdout 缺少 ${expected}`)
+    }
+    if (!/session-id=session-[a-zA-Z0-9._-]+/u.test(interactive.stdout)) {
+      throw new Error('Mythos M3 mock interactive stdout 缺少 session id')
+    }
+    if (interactive.stderr !== '') throw new Error(`Mythos M3 mock interactive stderr 非空：${interactive.stderr}`)
+    verifyM3Requests(interactiveMock.requests, prompt, nonce)
+    if (interactiveSessions.length !== 1) {
+      throw new Error(`Mythos M3 mock interactive 应落盘 1 个 session，实际 ${String(interactiveSessions.length)}`)
+    }
+    const interactiveSession = await readSession(interactiveSessions[0]!)
+    assertNoSensitiveEvidence([
+      interactive.stdout, interactive.stderr,
+      JSON.stringify(interactiveMock.requests.map(request => request.body)), interactiveSession,
+    ], credential)
   } finally {
+    await interactiveMock?.close()
     await mock.close()
     await rm(root, { force: true, recursive: true })
   }

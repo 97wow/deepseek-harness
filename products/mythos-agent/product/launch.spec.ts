@@ -31,7 +31,7 @@ describe('Mythos 启动器', () => {
     expect(interactiveBanner('0.1.1', '/workspace', 'read-only')).toContain('MYTHOS Agent 0.1.1')
     expect(interactiveBanner('0.1.1', '/workspace', 'read-only')).toContain('deepseek-v4-flash')
     expect(interactiveBanner('0.1.1', '/workspace', 'read-only')).toContain('/workspace')
-    expect(interactiveTurnArgs('first')).toEqual(['first'])
+    expect(interactiveTurnArgs('first')).toEqual(['--emit-session-id', 'first'])
     expect(interactiveTurnArgs('second', 'session-cold-1')).toEqual(['--resume', 'session-cold-1', 'second'])
   })
 

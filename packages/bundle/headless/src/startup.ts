@@ -5,7 +5,7 @@
  * @module @deepseek-ai/dsh-headless/startup
  */
 
-import { Command } from 'commander'
+import { Command, Option } from 'commander'
 import type { Context } from '@deepseek-ai/cordis'
 import { parseCmdline } from '@deepseek-ai/dsh-cmdline'
 
@@ -20,6 +20,8 @@ export const HEADLESS_STARTUP_SERVICE = 'headlessStartup'
 
 /** What the runner row reads from {@link HEADLESS_STARTUP_SERVICE}. */
 export interface HeadlessStartupValues {
+  /** Whether this invocation explicitly requests the new durable id. */
+  emitSessionId?: boolean
   /** Persisted session selected for this invocation, when resuming. */
   resumeSessionId?: string
   /** The task text this invocation asked for. */
@@ -38,6 +40,7 @@ function headlessCommand(): Command {
     .name('dsh --profile headless')
     .description('Answer one task, print the final assistant message, and exit.')
     .helpOption('-h, --help', 'show this help')
+    .addOption(new Option('--emit-session-id').hideHelp())
     .option('--resume <session>', 'resume a persisted headless session')
     .argument('[task...]', 'the task text; multiple words are joined by spaces')
     .addHelpText('after', `
@@ -57,11 +60,13 @@ export function apply(ctx: Context): void {
   program.action(() => {
     const task = program.args.join(' ')
     if (task.trim() === '') program.error('error: a task is required, for example: dsh --profile headless "run the tests"')
-    const resumeSessionId = program.opts<{ resume?: string }>().resume
+    const options = program.opts<{ emitSessionId?: boolean; resume?: string }>()
+    const resumeSessionId = options.resume
     if (resumeSessionId !== undefined && !SESSION_ID.test(resumeSessionId)) {
       program.error('error: --resume needs a session-* id')
     }
     ctx.provide(HEADLESS_STARTUP_SERVICE, {
+      ...(options.emitSessionId === true ? { emitSessionId: true } : {}),
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
       task,
     } satisfies HeadlessStartupValues)

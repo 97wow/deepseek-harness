@@ -52,6 +52,7 @@ export const apply = ctx => globalThis.__headlessStartupApply(ctx)
     `  name: ${rowUrl}`,
     `  inject: [${HEADLESS_STARTUP_SERVICE}]`,
     '  config:',
+    '    emitSessionId: !!js ctx.headlessStartup.emitSessionId',
     '    resumeSessionId: !!js ctx.headlessStartup.resumeSessionId',
     '    task: !!js ctx.headlessStartup.task',
     '- id: headless-startup',
@@ -93,6 +94,15 @@ describe('headless command-line provider', () => {
     const { task, observed } = await bootStartup(['--resume', 'session-cold-1', 'continue', 'the', 'task'])
     expect(task).toEqual({ resumeSessionId: 'session-cold-1', task: 'continue the task' })
     expect(observed.runnerConfig).toEqual({ resumeSessionId: 'session-cold-1', task: 'continue the task' })
+  })
+
+  it('only requests session-id output through the hidden explicit flag', async () => {
+    const { task, observed } = await bootStartup(['--emit-session-id', 'start'])
+    expect(task).toEqual({ emitSessionId: true, task: 'start' })
+    expect(observed.runnerConfig).toEqual({ emitSessionId: true, task: 'start' })
+
+    const help = await bootStartup(['--help'])
+    expect(help.observed.out).not.toContain('--emit-session-id')
   })
 
   it('rejects malformed resume ids before publishing runner config', async () => {
