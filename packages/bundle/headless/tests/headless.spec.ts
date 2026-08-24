@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
-import type { Agent, AgentHandle, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, CreateAgentOptions, ResumeAgentOptions } from '@deepseek-ai/dsh-agent'
 import AgentDefaultModelConfig from '@deepseek-ai/dsh-agent-default-model'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
@@ -50,48 +50,63 @@ function appendTurn(
 /** Mount the real registries around a small scripted Agent factory. */
 async function bench(script: Script): Promise<{
   ctx: Context
-  run(): Promise<{ code: number; out: string; err: string; order: string[] }>
+  calls: { create: number; resume: number }
+  run(config?: Config): Promise<{ code: number; out: string; err: string; order: string[] }>
 }> {
   const ctx = new Context()
+  const calls = { create: 0, resume: 0 }
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentDefaultModelConfig, { provider: 'test-provider', model: 'test-model' })
+  const createAgent = async (
+    ownerCtx: Context,
+    session: Session,
+    options: Pick<CreateAgentOptions, 'agentOptions' | 'setup'> | Pick<ResumeAgentOptions, 'agentOptions' | 'setup'>,
+  ): Promise<AgentHandle> => {
+    let idle = Promise.resolve()
+    const agent = {} as Agent
+    const agentCtx = ownerCtx.extend({ agent })
+    Object.assign(agent, {
+      id: session.id,
+      options: options.agentOptions ?? {},
+      session,
+      inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+      status: 'idle',
+      ctx: agentCtx,
+      cancel: () => {},
+      runMaintenance: () => Promise.reject(new Error('not used')),
+      send: () => {},
+      followup: (message: UserMessage) => {
+        agent.inbox.append('next-turn', message)
+        idle = Promise.resolve().then(() => script.afterPrompt(session, message))
+      },
+      steer: () => {},
+      inject: () => {},
+      whenIdle: () => idle,
+    } satisfies Partial<Agent>)
+    await options.setup?.(agentCtx)
+    script.before?.(session)
+    ctx.agents.register(agent)
+    return { agent, dispose: () => Promise.resolve() }
+  }
   ctx.agents.setFactory({
     async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
+      calls.create += 1
       const session = ctx.sessions.create(options.sessionId, {
         ...options.meta === undefined ? {} : { meta: options.meta },
       })
-      let idle = Promise.resolve()
-      const agent = {} as Agent
-      const agentCtx = ownerCtx.extend({ agent })
-      Object.assign(agent, {
-        id: session.id,
-        options: options.agentOptions ?? {},
-        session,
-        inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
-        status: 'idle',
-        ctx: agentCtx,
-        cancel: () => {},
-        runMaintenance: () => Promise.reject(new Error('not used')),
-        send: () => {},
-        followup: (message: UserMessage) => {
-          agent.inbox.append('next-turn', message)
-          idle = Promise.resolve().then(() => script.afterPrompt(session, message))
-        },
-        steer: () => {},
-        inject: () => {},
-        whenIdle: () => idle,
-      } satisfies Partial<Agent>)
-      await options.setup?.(agentCtx)
-      script.before?.(session)
-      ctx.agents.register(agent)
-      return { agent, dispose: () => Promise.resolve() }
+      return await createAgent(ownerCtx, session, options)
     },
-    resume: () => Promise.reject(new Error('not used')),
+    async resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle> {
+      calls.resume += 1
+      const session = ctx.sessions.create(options.resumeSessionId)
+      return await createAgent(ownerCtx, session, options)
+    },
   })
   return {
     ctx,
-    run: async () => {
+    calls,
+    run: async (config = { task: 'do the thing' }) => {
       let out = ''
       let err = ''
       const order: string[] = []
@@ -101,7 +116,7 @@ async function bench(script: Script): Promise<{
       const exited = new Promise<number>((resolve) => {
         ctx.provide('appExit', (code: number) => { order.push('exit'); resolve(code) })
       })
-      apply(ctx, { task: 'do the thing' })
+      apply(ctx, config)
       return { code: await exited, out, err, order }
     },
   }
@@ -140,6 +155,32 @@ describe('headless runner', () => {
       },
     })
     expect(await test.run()).toMatchObject({ code: 0, out: 'race-free answer\n', err: '' })
+    await test.ctx.fiber.dispose()
+  })
+
+  it('emits a stable id for a newly flushed session without changing stdout', async () => {
+    const test = await bench({
+      afterPrompt(session, message) { appendTurn(session, 1, message, 'created answer', true) },
+    })
+    const result = await test.run({ emitSessionId: true, task: 'create' })
+    expect(result.code).toBe(0)
+    expect(result.out).toBe('created answer\n')
+    expect(result.err).toMatch(/^dsh: session-id=session-[0-9a-f-]+\n$/u)
+    expect(test.calls).toEqual({ create: 1, resume: 0 })
+    await test.ctx.fiber.dispose()
+  })
+
+  it('resumes the requested session and emits no replacement id', async () => {
+    const test = await bench({
+      before(session) {
+        const prior = { role: 'user', content: [{ type: 'text', text: 'prior' }], source: { kind: 'user' }, id: 'prior' } as UserMessage
+        appendTurn(session, 1, prior, 'prior answer', true)
+      },
+      afterPrompt(session, message) { appendTurn(session, 2, message, 'resumed answer', true) },
+    })
+    const result = await test.run({ emitSessionId: true, resumeSessionId: 'session-existing', task: 'continue' })
+    expect(result).toMatchObject({ code: 0, out: 'resumed answer\n', err: '' })
+    expect(test.calls).toEqual({ create: 0, resume: 1 })
     await test.ctx.fiber.dispose()
   })
 
@@ -247,6 +288,6 @@ describe('headless runner', () => {
 
   it('validates config: the task is required', () => {
     expect(() => new Config({} as never)).toThrow()
-    expect(new Config({ task: 'x' })).toEqual({ task: 'x' })
+    expect(new Config({ task: 'x' })).toEqual({ emitSessionId: false, task: 'x' })
   })
 })

@@ -52,6 +52,7 @@ export const apply = ctx => globalThis.__headlessStartupApply(ctx)
     `  name: ${rowUrl}`,
     `  inject: [${HEADLESS_STARTUP_SERVICE}]`,
     '  config:',
+    '    resumeSessionId: !!js ctx.headlessStartup.resumeSessionId',
     '    task: !!js ctx.headlessStartup.task',
     '- id: headless-startup',
     `  name: ${pathToFileURL(join(dir, 'startup.mjs')).href}`,
@@ -86,6 +87,20 @@ describe('headless command-line provider', () => {
     expect(task).toEqual({ task: 'run the tests' })
     expect(observed.runnerConfig).toEqual({ task: 'run the tests' })
     expect(observed.exits).toEqual([])
+  })
+
+  it('passes a persisted session id to the runner without consuming the task', async () => {
+    const { task, observed } = await bootStartup(['--resume', 'session-cold-1', 'continue', 'the', 'task'])
+    expect(task).toEqual({ resumeSessionId: 'session-cold-1', task: 'continue the task' })
+    expect(observed.runnerConfig).toEqual({ resumeSessionId: 'session-cold-1', task: 'continue the task' })
+  })
+
+  it('rejects malformed resume ids before publishing runner config', async () => {
+    const { task, observed } = await bootStartup(['--resume', '../session-cold-1', 'continue'])
+    expect(observed.out).toContain('--resume needs a session-* id')
+    expect(task).toBeUndefined()
+    expect(observed.runnerConfig).toBeUndefined()
+    expect(observed.exits).toEqual([1])
   })
 
   it.each([{ args: [] }, { args: ['   '] }])('rejects an invocation with no non-whitespace task ($args)', async ({ args }) => {

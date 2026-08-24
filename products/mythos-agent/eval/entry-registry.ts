@@ -195,7 +195,7 @@ export const evaluationRuntimeSourceFiles = Object.freeze([
   'flywheel/archive.ts', 'flywheel/build.ts', 'flywheel/comprehensive-gate.ts', 'flywheel/journey-gate.ts',
   'flywheel/advanced-journey-gate.ts', 'flywheel/real-repo-scope-gate.ts', 'flywheel/gate-policy.ts', 'flywheel/gate.ts',
   'flywheel/server-dataset.ts', 'flywheel/server-import.ts', 'flywheel/server-analyze.ts', 'flywheel/server-gate.ts',
-  'flywheel/session-curation.ts', 'flywheel/session-curate.ts', 'product/config.ts', 'product/launch.ts',
+  'flywheel/session-curation.ts', 'flywheel/session-curate.ts', 'product/config.ts', 'product/interactive.ts', 'product/launch.ts',
   'product/smoke-web.ts', 'release/check.ts', 'release/consumer.ts', 'release/m3-cli.ts', 'release/pack.ts',
   'release/security.ts', 'release/verify.ts',
 ] as const)

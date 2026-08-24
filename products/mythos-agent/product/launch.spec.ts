@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { isAbsolute, relative, sep } from 'node:path'
 import { createLaunchSpec, releaseLaunchPaths } from './launch.js'
+import { interactiveBanner, interactiveTurnArgs } from './interactive.js'
 
 describe('Mythos 启动器', () => {
   it('以 loopback 和固定端口安全启动 Web Profile', () => {
@@ -24,6 +25,14 @@ describe('Mythos 启动器', () => {
   it('为 Headless 选择 Mythos Profile 并保留任务参数', () => {
     const spec = createLaunchSpec('headless', ['修复测试'], {})
     expect(spec.args.slice(-3)).toEqual(['--profile', 'mythos', '修复测试'])
+  })
+
+  it('交互模式展示产品身份并在后续轮次复用 resume', () => {
+    expect(interactiveBanner('0.1.1', '/workspace', 'read-only')).toContain('MYTHOS Agent 0.1.1')
+    expect(interactiveBanner('0.1.1', '/workspace', 'read-only')).toContain('deepseek-v4-flash')
+    expect(interactiveBanner('0.1.1', '/workspace', 'read-only')).toContain('/workspace')
+    expect(interactiveTurnArgs('first')).toEqual(['first'])
+    expect(interactiveTurnArgs('second', 'session-cold-1')).toEqual(['--resume', 'session-cold-1', 'second'])
   })
 
   it('拒绝缺少任务和不安全的 API 地址', () => {

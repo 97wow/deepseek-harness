@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
-import { access, realpath } from 'node:fs/promises'
+import { access, readFile, realpath } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runInteractive } from './interactive.js'
 
 export type MythosSurface = 'headless' | 'web'
 
@@ -117,7 +118,13 @@ const invokedAsMain = process.argv[1] !== undefined
   && await realpath(fileURLToPath(import.meta.url)) === await realpath(process.argv[1])
 if (invokedAsMain) {
   const surface = process.argv[2]
-  if (surface !== 'headless' && surface !== 'web') throw new Error('用法：mythos <headless|web> [...args]')
   const packaged = basename(dirname(fileURLToPath(import.meta.url))) === 'bin'
-  process.exitCode = await launch(surface, process.argv.slice(3), packaged ? releaseLaunchPaths(productRoot) : sourcePaths)
+  const paths = packaged ? releaseLaunchPaths(productRoot) : sourcePaths
+  if (surface === undefined) {
+    const manifest = JSON.parse(await readFile(join(productRoot, 'package.json'), 'utf8')) as { version: string }
+    process.exitCode = await runInteractive(manifest.version, paths, args => createLaunchSpec('headless', args, process.env, paths))
+  } else {
+    if (surface !== 'headless' && surface !== 'web') throw new Error('用法：mythos [headless|web] [...args]')
+    process.exitCode = await launch(surface, process.argv.slice(3), paths)
+  }
 }

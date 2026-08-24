@@ -32,4 +32,5 @@
       name: '@deepseek-ai/dsh-headless'
       inject: [headlessStartup]
       config:
+        resumeSessionId: !!js ctx.headlessStartup.resumeSessionId
         task: !!js ctx.headlessStartup.task
