@@ -15,6 +15,13 @@ const attended: DirectoryPickerHostFacts = {
 }
 
 describe('resolveDirectoryPickerBackend', () => {
+  it('honors an explicit embedding-host backend selection', () => {
+    expect(resolveDirectoryPickerBackend({ ...attended, env: { DSH_DIRECTORY_PICKER: 'browse' } })).toBe('browse')
+    expect(resolveDirectoryPickerBackend({
+      ...attended, bindHost: '0.0.0.0', env: { DSH_DIRECTORY_PICKER: 'native' },
+    })).toBe('native')
+  })
+
   it('resolves native for a loopback bind on a display platform', () => {
     expect(resolveDirectoryPickerBackend(attended)).toBe('native')
     expect(resolveDirectoryPickerBackend({ ...attended, platform: 'win32' })).toBe('native')

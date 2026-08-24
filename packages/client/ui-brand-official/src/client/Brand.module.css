@@ -1,0 +1,26 @@
+.markFrame {
+  fill: color-mix(in srgb, currentColor 9%, transparent);
+  stroke: currentColor;
+  stroke-width: 1.35;
+}
+
+.markTrace {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.1;
+}
+
+.markNode {
+  fill: currentColor;
+}
+
+.wordmark {
+  display: inline-block;
+  font-family: 'Avenir Next Condensed', 'DIN Condensed', 'Arial Narrow', sans-serif;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  line-height: 24px;
+}

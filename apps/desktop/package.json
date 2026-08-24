@@ -1,0 +1,15 @@
+{
+  "name": "@mythos/desktop",
+  "version": "0.2.0-beta.1",
+  "private": true,
+  "type": "module",
+  "main": "src/bootstrap.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "pack:mac": "electron-builder --mac dir dmg --arm64 --config electron-builder.config.mjs"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^26.0.12"
+  }
+}
