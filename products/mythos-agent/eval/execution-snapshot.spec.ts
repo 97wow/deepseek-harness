@@ -325,6 +325,25 @@ process.stdout.write(result.url)`
     if (process.platform === 'darwin' && root.startsWith('/var/')) expect(await realpath(root)).toMatch(/^\/private\/var\//)
   })
 
+  it('裸包从 profile fallback 解析后仍必须通过快照文件表验证', async () => {
+    const root = await fixture()
+    const canonicalRoot = await realpath(root)
+    const contents = await readFile(join(root, 'src/entry.ts'))
+    const loader = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'snapshot-loader.mjs')).href
+    const expectedParent = pathToFileURL(join(canonicalRoot, 'products/mythos-agent/home/profiles/mythos/cordis.yml')).href
+    const script = `import { initialize, resolve } from ${JSON.stringify(loader)};
+initialize({ root: ${JSON.stringify(root)}, mutableRoots: [], files: [{ path: 'src/entry.ts', type: 'file', sha256: ${JSON.stringify(createHash('sha256').update(contents).digest('hex'))}, size: ${contents.length} }] });
+let attempts = 0;
+const result = resolve('@scope/example', { parentURL: 'file:///outside/loader.js' }, (_specifier, context) => {
+  attempts += 1;
+  if (context.parentURL !== ${JSON.stringify(expectedParent)}) { const error = new Error('missing'); error.code = 'ERR_MODULE_NOT_FOUND'; throw error }
+  return { url: ${JSON.stringify(pathToFileURL(join(canonicalRoot, 'src/entry.ts')).href)} }
+});
+process.stdout.write(JSON.stringify({ attempts, url: result.url }))`
+    const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '--eval', script], { encoding: 'utf8' })
+    expect(JSON.parse(stdout)).toEqual({ attempts: 2, url: pathToFileURL(join(canonicalRoot, 'src/entry.ts')).href })
+  })
+
   it('正式 register hook 对快照外 CommonJS require fail closed', async () => {
     const root = await hookFixture()
     const destination = await mkdtemp(join(tmpdir(), 'mythos-artifact-test-'))

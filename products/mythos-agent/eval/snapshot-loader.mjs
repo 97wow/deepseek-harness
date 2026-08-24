@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { isAbsolute, relative, sep } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { isAbsolute, relative, resolve as resolvePath, sep } from 'node:path'
 
 let root
 let mutableRoots = []
@@ -40,7 +40,20 @@ function sourceBytes(source) {
 }
 
 export function resolve(specifier, context, nextResolve) {
-  const resolved = nextResolve(specifier, context)
+  let resolved
+  try {
+    resolved = nextResolve(specifier, context)
+  } catch (error) {
+    const missingPackage = error?.code === 'ERR_MODULE_NOT_FOUND'
+      && !specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.startsWith('#')
+      && !specifier.includes(':')
+    if (!missingPackage) throw error
+    const profile = pathToFileURL(resolvePath(
+      root,
+      'products/mythos-agent/home/profiles/mythos/cordis.yml',
+    )).href
+    resolved = nextResolve(specifier, { ...context, parentURL: profile })
+  }
   if (!resolved.url.startsWith('node:')) verifiedEntry(resolved.url)
   return resolved
 }
