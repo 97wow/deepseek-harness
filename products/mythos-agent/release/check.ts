@@ -83,8 +83,8 @@ export async function checkRelease(options: { requireClean?: boolean } = {}): Pr
   await verifyTrackedSecrets()
   await verifyLocalSecretBoundary()
   verifyPinnedDsh(manifest)
-  verifyDumpedConfig('mythos', ['name: Mythos M3', 'model: deepseek-v4-flash', 'You are Mythos Agent'])
-  verifyDumpedConfig('mythos-web', ['name: Mythos M3', 'default: mythos', 'You are Mythos Agent'])
+  verifyDumpedConfig('mythos', ['name: claude-sonnet-5', 'model: claude-sonnet-5', 'You are Mythos Agent'])
+  verifyDumpedConfig('mythos-web', ['name: claude-sonnet-5', 'default: mythos', 'You are Mythos Agent'])
 
   git(['diff', '--check'])
   if (options.requireClean !== false) {

@@ -1,19 +1,40 @@
 - id: llm-deepseek
+  disabled: true
+
+- id: llm-pi-ai
   config:
-    thinking: enabled
-    reasoningEffort: max
-    maxTokens: 32768
-    defaultContextWindow: 128000
-    models:
-      - id: deepseek-v4-flash
-        name: Mythos M3
-        contextWindow: 128000
-        maxTokens: 32768
+    providers:
+      mythos:
+        displayName: Mythos
+        apiKeyEnv: DEEPSEEK_API_KEY
+        api: anthropic-messages
+        baseURL: https://d.llmapi.pro:99
+        reasoning: high
+        thinkingBudgets:
+          high: 32768
+        defaultInput: [text, image]
+        models:
+          - id: claude-sonnet-5
+            name: claude-sonnet-5
+            contextWindow: 1000000
+            maxTokens: 131072
+            reasoningEfforts:
+              off:
+              high: high
 
 - id: agent-default-model
   config:
-    provider: deepseek-official
-    model: deepseek-v4-flash
+    provider: mythos
+    model: claude-sonnet-5
+
+- id: web-search-deepseek
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    baseURL: https://d.llmapi.pro:99/v1
+    model: claude-sonnet-5
+    maxTokens: 4096
+    maxUses: 5
+    allowTextSourceFallback: true
 
 # A one-shot CLI session has no sidebar/title consumer. Disabling the title
 # model call keeps one read-tool turn to the two requests it actually needs.
@@ -23,8 +44,8 @@
 - id: system-prompt
   config:
     persona: >-
-      You are Mythos Agent, an autonomous coding agent powered by the {{model}}
-      model. Your working directory is {{cwd}}. Complete requested changes
+      You are Mythos Agent, an autonomous coding agent powered by claude-sonnet-5.
+      Your working directory is {{cwd}}. Complete requested changes
       end-to-end. Inspect relevant files before editing, preserve unrelated user
       work and secrets, and match the requested scope: diagnosis, review, and
       status tasks are read-only unless changes are explicitly requested, while

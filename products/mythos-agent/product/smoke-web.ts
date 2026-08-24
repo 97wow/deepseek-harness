@@ -19,6 +19,11 @@ async function fetchRequired(url: URL, expected: string): Promise<void> {
   if (!body.includes(expected)) throw new Error(`${url.pathname} 缺少 ${expected}`)
 }
 
+async function fetchAbsent(url: URL): Promise<void> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  if (response.status !== 404) throw new Error(`${url.pathname} 不应对 Mythos 用户公开，实际返回 HTTP ${String(response.status)}`)
+}
+
 const child = spawn(process.execPath, ['--import', 'tsx/esm', launchFile, 'web', '--port', '0'], {
   cwd: resolve(productRoot, '..', '..'),
   env: process.env,
@@ -52,8 +57,13 @@ try {
 
   if (baseUrl.hostname !== '127.0.0.1') throw new Error(`Mythos Web 未绑定 loopback：${baseUrl.href}`)
   await fetchRequired(baseUrl, 'window.__DSH_BOOT__')
-  await fetchRequired(new URL('/plugins/@deepseek-ai/dsh-client-ui-agent-preset/client.js', baseUrl), 'agent-preset')
-  await fetchRequired(new URL('/plugins/@deepseek-ai/dsh-client-ui-model-selection/client.js', baseUrl), 'model')
+  for (const plugin of [
+    '@deepseek-ai/dsh-client-ui-agent-preset',
+    '@deepseek-ai/dsh-client-ui-model-selection',
+    '@deepseek-ai/dsh-client-ui-settings-models',
+    '@deepseek-ai/dsh-client-ui-settings-plugin-inventory',
+    '@deepseek-ai/dsh-client-ui-settings-plugins',
+  ]) await fetchAbsent(new URL(`/plugins/${plugin}/client.js`, baseUrl))
 } finally {
   child.kill('SIGTERM')
 }
@@ -69,4 +79,4 @@ const exit = await new Promise<number | null>((resolveExit, reject) => {
   }, reject)
 })
 if (exit !== 0) throw new Error(`Mythos Web 冒烟停服失败：${String(exit)}\n${stderr}`)
-process.stdout.write('Mythos Web smoke: 启动、HTTP、插件与停服通过\n')
+process.stdout.write('Mythos Web smoke: 启动、HTTP、受控设置边界与停服通过\n')

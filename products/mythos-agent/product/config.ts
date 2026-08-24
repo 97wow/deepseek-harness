@@ -13,7 +13,7 @@ const cordisSchema = yaml.DEFAULT_SCHEMA.extend([
 
 export interface ProductProfileIdentity {
   agentDefaultModel: RecordValue
-  llmDeepseek: RecordValue
+  llmPiAi: RecordValue
   persona: string
 }
 
@@ -39,20 +39,29 @@ async function patchRows(path: string): Promise<RecordValue[]> {
   return value.map((row, index) => object(row, `${path}[${String(index)}]`))
 }
 
-function rowConfig(rows: readonly RecordValue[], id: string): RecordValue {
+function row(rows: readonly RecordValue[], id: string): RecordValue {
   const row = rows.find(candidate => candidate.id === id)
   if (row === undefined) throw new Error(`缺少 ${id} 配置`)
-  return object(row.config, `${id}.config`)
+  return row
+}
+
+function rowConfig(rows: readonly RecordValue[], id: string): RecordValue {
+  return object(row(rows, id).config, `${id}.config`)
+}
+
+function requireDisabled(rows: readonly RecordValue[], id: string): void {
+  if (row(rows, id).disabled !== true) throw new Error(`${id} 必须在 Mythos 产品中禁用`)
 }
 
 async function profileIdentity(profileRoot: string): Promise<ProductProfileIdentity> {
   const rows = await patchRows(join(profileRoot, 'cordis.patch.yml'))
-  const llmDeepseek = rowConfig(rows, 'llm-deepseek')
+  requireDisabled(rows, 'llm-deepseek')
+  const llmPiAi = rowConfig(rows, 'llm-pi-ai')
   const agentDefaultModel = rowConfig(rows, 'agent-default-model')
   const systemPrompt = rowConfig(rows, 'system-prompt')
   return {
     agentDefaultModel,
-    llmDeepseek,
+    llmPiAi,
     persona: text(systemPrompt.persona, 'system-prompt.config.persona'),
   }
 }
@@ -88,8 +97,51 @@ export async function verifyProductProfiles(productRoot: string): Promise<void> 
   }
 
   const agentPresets = rowConfig(webRows, 'agent-presets')
-  if (agentPresets.default !== 'mythos' || agentPresets.includeUserRoot !== true) {
-    throw new Error('Web Profile 未把 mythos 设为默认 Agent Preset')
+  if (agentPresets.default !== 'mythos' || agentPresets.includeUserRoot !== false) {
+    throw new Error('Web Profile 必须固定 mythos Agent Preset 并禁止用户 Preset')
+  }
+
+  for (const id of [
+    'ui-agent-preset',
+    'ui-model-selection',
+    'ui-settings-models',
+    'ui-settings-plugin-inventory',
+    'ui-settings-plugins',
+    'plugin-inventory',
+  ]) requireDisabled(webRows, id)
+
+  const providers = object(headless.llmPiAi.providers, 'llm-pi-ai.config.providers')
+  const mythos = object(providers.mythos, 'llm-pi-ai.config.providers.mythos')
+  if (mythos.api !== 'anthropic-messages' || mythos.baseURL !== 'https://d.llmapi.pro:99') {
+    throw new Error('Mythos 模型必须使用受控网关的 Anthropic 路由')
+  }
+  if (mythos.apiKeyEnv !== 'DEEPSEEK_API_KEY' || mythos.reasoning !== 'high') {
+    throw new Error('Mythos 模型凭据或默认思考模式不正确')
+  }
+  if (!Array.isArray(mythos.models) || mythos.models.length !== 1) {
+    throw new Error('Mythos 必须只公开一个模型')
+  }
+  const model = object(mythos.models[0], 'llm-pi-ai.config.providers.mythos.models[0]')
+  if (model.id !== 'claude-sonnet-5' || model.name !== 'claude-sonnet-5') {
+    throw new Error('Mythos 对外模型必须统一为 claude-sonnet-5')
+  }
+  if (model.contextWindow !== 1_000_000 || model.maxTokens !== 131_072) {
+    throw new Error('claude-sonnet-5 未对齐 M3 的上下文或输出能力')
+  }
+
+  const defaultModel = headless.agentDefaultModel
+  if (defaultModel.provider !== 'mythos' || defaultModel.model !== 'claude-sonnet-5') {
+    throw new Error('默认模型未固定为 Mythos claude-sonnet-5 路由')
+  }
+  if (!headless.persona.includes('claude-sonnet-5') || headless.persona.includes('{{model}}')) {
+    throw new Error('Persona 必须使用稳定的对外模型名称')
+  }
+
+  const webSearch = rowConfig(webRows, 'web-search-deepseek')
+  if (webSearch.baseURL !== 'https://d.llmapi.pro:99/v1'
+    || webSearch.model !== 'claude-sonnet-5'
+    || webSearch.allowTextSourceFallback !== true) {
+    throw new Error('Web 搜索必须走受控网关的 claude-sonnet-5 路由')
   }
 
   const presetPersona = rowConfig(presetRows, 'persona')
