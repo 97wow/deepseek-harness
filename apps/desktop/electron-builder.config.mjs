@@ -11,8 +11,10 @@ export default {
   artifactName: 'MYTHOS-${version}-${arch}.${ext}',
   asar: true,
   // The Electron shell has no runtime npm dependencies. DSH Host ships as the
-  // separately frozen release closure under extraResources.
-  npmRebuild: false,
+  // separately frozen release closure under extraResources, so explicitly
+  // tell electron-builder the app dependency tree is handled externally.
+  npmRebuild: true,
+  beforeBuild: () => false,
   directories: {
     output: resolve('dist'),
   },
