@@ -1,7 +1,8 @@
 /**
  * DeepSeek search through an Anthropic-compatible Messages model call with the native
  * `web_search_20250305` server tool. Each search costs a model turn, but returns structured
- * result blocks; absence of those blocks is an error rather than a prose-scraping fallback.
+ * result blocks. Deployments whose trusted gateway consumes those blocks may explicitly enable
+ * an HTTPS-source fallback; strict provider responses still reject prose-only output by default.
  * The wire format and native `fetch` client are provider-private and do not use `ctx.llm`.
  * @module @deepseek-ai/dsh-web-search-deepseek/provider
  */
@@ -102,6 +103,8 @@ export interface DeepSeekSearchProviderOptions {
   maxTokens: number
   /** Maximum `web_search` server-tool uses per request. */
   maxUses: number
+  /** Accept citeable HTTPS links from text when a gateway consumes native result blocks. */
+  allowTextSourceFallback?: boolean
   /**
    * Record the exact secret-free request immediately before dispatch. A throw
    * prevents dispatch so model-visible auxiliary input cannot escape logging.
@@ -139,15 +142,37 @@ export function citationSnippets(blocks: readonly ContentBlock[]): Map<string, s
  * `truncated` is always `false` here.
  *
  * @param response - the parsed Messages response body.
+ * @param allowTextSourceFallback - whether text-only gateway responses may supply HTTPS sources.
+ * @param textFallbackUrl - search results page used when gateway prose contains no source links.
  * @returns the normalized result with deduped, snippet-joined sources.
  * @throws {@link WebError} when native search produced no result block.
  */
-export function mapAnthropicResponse(response: AnthropicResponse): WebSearchResult {
+export function mapAnthropicResponse(
+  response: AnthropicResponse,
+  allowTextSourceFallback = false,
+  textFallbackUrl?: string,
+): WebSearchResult {
   const blocks = response.content ?? []
   const resultBlocks = blocks.filter(
     (block): block is WebSearchToolResultBlock => block.type === 'web_search_tool_result',
   )
   if (resultBlocks.length === 0) {
+    if (allowTextSourceFallback) {
+      const sources = textSources(blocks)
+      if (sources.length > 0) return { sources, truncated: false }
+      const snippet = blocks
+        .filter((block): block is TextBlock => block.type === 'text')
+        .map(block => block.text)
+        .filter((text): text is string => typeof text === 'string' && text.length > 0)
+        .join('\n\n')
+        .trim()
+      if (textFallbackUrl !== undefined && snippet.length > 0) {
+        return {
+          sources: [{ url: textFallbackUrl, title: 'Web search results', snippet }],
+          truncated: false,
+        }
+      }
+    }
     throw new WebError(
       'DeepSeek returned no web_search_tool_result blocks; the request may not have triggered native web search',
       'WEB_PROVIDER_ERROR',
@@ -171,6 +196,37 @@ export function mapAnthropicResponse(response: AnthropicResponse): WebSearchResu
     }
   }
   return { sources, truncated: false }
+}
+
+/**
+ * Extract citeable HTTPS sources from a gateway's text-only search response.
+ * @param blocks - Anthropic response content blocks.
+ * @returns deduplicated HTTPS sources in response order.
+ */
+export function textSources(blocks: readonly ContentBlock[]): WebSearchSource[] {
+  const sources: WebSearchSource[] = []
+  const seen = new Set<string>()
+  for (const block of blocks) {
+    if (block.type !== 'text') continue
+    const text = (block as TextBlock).text
+    if (text == null || text.length === 0) continue
+    const markdownUrls = new Set<string>()
+    for (const match of text.matchAll(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/gu)) {
+      const title = match[1]
+      const url = match[2]
+      if (url === undefined || seen.has(url)) continue
+      seen.add(url)
+      markdownUrls.add(url)
+      sources.push({ url, ...(title !== undefined && title.length > 0 ? { title } : {}), snippet: text })
+    }
+    for (const match of text.matchAll(/https:\/\/[^\s<>()\]]+/gu)) {
+      const url = match[0].replace(/[.,;:!?`'"]+$/u, '')
+      if (markdownUrls.has(url) || seen.has(url)) continue
+      seen.add(url)
+      sources.push({ url, snippet: text })
+    }
+  }
+  return sources
 }
 
 /** The DeepSeek-backed search provider; HTTP redirects fail as `WEB_PROVIDER_ERROR`. */
@@ -202,12 +258,15 @@ export class DeepSeekSearchProvider implements WebSearchProvider {
     const apiKey = await this.apiKey(options, signal)
     throwIfSearchAborted(signal)
     const endpoint = `${options.baseURL}/messages`
+    const prompt = options.allowTextSourceFallback === true
+      ? `Perform a web search for the query: ${request.query}. Include every cited source as a full HTTPS URL.`
+      : `Perform a web search for the query: ${request.query}`
     const body: DeepSeekSearchLlmRequest['body'] = {
       model: options.model,
       max_tokens: options.maxTokens,
       messages: [{
         role: 'user',
-        content: [{ type: 'text', text: `Perform a web search for the query: ${request.query}` }],
+        content: [{ type: 'text', text: prompt }],
       }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: options.maxUses }],
     }
@@ -261,7 +320,13 @@ export class DeepSeekSearchProvider implements WebSearchProvider {
 
     try {
       const payload = await response.json() as AnthropicResponse
-      return mapAnthropicResponse(payload)
+      return mapAnthropicResponse(
+        payload,
+        options.allowTextSourceFallback,
+        options.allowTextSourceFallback === true
+          ? `https://www.google.com/search?q=${encodeURIComponent(request.query)}`
+          : undefined,
+      )
     } catch (error: unknown) {
       if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
       if (error instanceof WebError) throw error

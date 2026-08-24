@@ -12,7 +12,7 @@ import {
   DEEPSEEK_PROVIDER_ID,
 } from '@deepseek-ai/dsh-web-search-deepseek'
 import * as deepseekPlugin from '@deepseek-ai/dsh-web-search-deepseek'
-import { citationSnippets, mapAnthropicResponse } from '../src/provider.ts'
+import { citationSnippets, mapAnthropicResponse, textSources } from '../src/provider.ts'
 import type { AnthropicResponse } from '@deepseek-ai/dsh-web-search-deepseek/src/types.ts'
 
 /** Construct the provider over a fixed options value; production passes a live thunk. */
@@ -140,9 +140,57 @@ describe('mapAnthropicResponse', () => {
       .toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
   })
 
+  it('accepts deduplicated HTTPS links when text fallback is explicitly enabled', () => {
+    const responseText = 'Sources: [Ethereum](https://ethereum.org/en/) and `https://example.test/price.`'
+    const response = {
+      content: [{
+        type: 'text',
+        text: responseText,
+      }],
+    } satisfies AnthropicResponse
+    expect(mapAnthropicResponse(response, true)).toEqual({
+      sources: [
+        {
+          url: 'https://ethereum.org/en/',
+          title: 'Ethereum',
+          snippet: responseText,
+        },
+        {
+          url: 'https://example.test/price',
+          snippet: responseText,
+        },
+      ],
+      truncated: false,
+    })
+  })
+
   it('throws WEB_PROVIDER_ERROR when content is absent entirely', () => {
     expect(() => mapAnthropicResponse({}))
       .toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
+  })
+
+  it('binds a prose-only gateway result to its HTTPS search page', () => {
+    expect(mapAnthropicResponse(
+      { content: [{ type: 'text', text: 'Grounded search summary' }] },
+      true,
+      'https://www.google.com/search?q=grounded%20query',
+    )).toEqual({
+      sources: [{
+        url: 'https://www.google.com/search?q=grounded%20query',
+        title: 'Web search results',
+        snippet: 'Grounded search summary',
+      }],
+      truncated: false,
+    })
+  })
+})
+
+describe('textSources', () => {
+  it('ignores non-HTTPS and text without sources', () => {
+    expect(textSources([
+      { type: 'text', text: 'http://insecure.test and plain text' },
+      { type: 'other' },
+    ])).toEqual([])
   })
 })
 
@@ -202,6 +250,15 @@ describe('DeepSeekSearchProvider request mapping', () => {
     await searchProvider(options).search({ query: 'q' }, controller.signal)
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(init.signal).toBe(controller.signal)
+  })
+
+  it('requests full HTTPS citations when gateway text fallback is enabled', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(searchResponse()))
+    vi.stubGlobal('fetch', fetchMock)
+    await searchProvider({ ...options, allowTextSourceFallback: true }).search({ query: 'hello' })
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string).messages[0].content[0].text)
+      .toBe('Perform a web search for the query: hello. Include every cited source as a full HTTPS URL.')
   })
 })
 

@@ -58,6 +58,8 @@ export interface Config {
   maxTokens?: number
   /** Maximum `web_search` server-tool uses per request. Defaults to 5. */
   maxUses?: number
+  /** Accept citeable HTTPS links from provider text when a gateway consumes native result blocks. */
+  allowTextSourceFallback?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -71,6 +73,7 @@ export const Config: z<Config> = z.object({
   apiVersion: z.string().default(DEEPSEEK_DEFAULT_API_VERSION),
   maxTokens: z.number().step(1).min(1).default(DEEPSEEK_DEFAULT_MAX_TOKENS),
   maxUses: z.number().step(1).min(1).default(DEEPSEEK_DEFAULT_MAX_USES),
+  allowTextSourceFallback: z.boolean().default(false),
 })
 
 /**
@@ -114,6 +117,7 @@ function resolveOptions(ctx: Context, config: Config): DeepSeekSearchProviderOpt
     apiVersion: config.apiVersion ?? DEEPSEEK_DEFAULT_API_VERSION,
     maxTokens: config.maxTokens ?? DEEPSEEK_DEFAULT_MAX_TOKENS,
     maxUses: config.maxUses ?? DEEPSEEK_DEFAULT_MAX_USES,
+    allowTextSourceFallback: config.allowTextSourceFallback ?? false,
     recordRequest: (request) => {
       ctx.get('agents')?.currentInitiator()?.session.append(
         'web/deepseek-search-llm-request',
