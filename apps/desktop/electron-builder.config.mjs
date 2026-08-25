@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { signMacApplication } from './scripts/sign-macos.mjs'
 
 const runtimeRoot = process.env.MYTHOS_RUNTIME_ROOT
 if (runtimeRoot === undefined || runtimeRoot === '') {
@@ -31,8 +32,10 @@ export default {
   mac: {
     category: 'public.app-category.developer-tools',
     darkModeSupport: true,
+    extendInfo: { ElectronTeamID: 'Z6M3LSX64A' },
     hardenedRuntime: signingIdentity !== undefined,
     identity: signingIdentity ?? null,
+    sign: signingIdentity === undefined ? null : signMacApplication,
     target: ['dir', 'dmg', 'zip'],
   },
   dmg: {
