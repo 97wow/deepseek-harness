@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
 import electronUpdater from 'electron-updater'
+import { createAppUpdateCoordinator } from './app-update.mjs'
 import { activeConfigRoot, checkHotConfig } from './hot-config.mjs'
 import { loadServiceEndpoints, searchEndpoint, selectServiceEndpoint } from './service-routing.mjs'
 
@@ -33,10 +34,18 @@ let hostProcess
 let activeHostUrl
 let mainWindow
 let activeEndpoint
-let activeUpdater
 let updateInitialized = false
-let updateState = { state: 'idle' }
 let configRevision = 0
+
+const appUpdates = createAppUpdateCoordinator({
+  createUpdater: source => new MacUpdater(source),
+  isPackaged: () => app.isPackaged,
+  publish: () => broadcastUpdateState(),
+  // Remote failures may contain query strings or CDN details. Keep logs useful
+  // without persisting provider-controlled error text that could carry secrets.
+  reportError: () => checkpoint('managed update source unavailable'),
+  sources: updateSources,
+})
 
 function checkpoint(message) {
   process.stdout.write(`[MYTHOS Desktop] ${message}\n`)
@@ -267,53 +276,24 @@ async function restartHost() {
 }
 
 function currentUpdateState() {
-  return { ...updateState, configRevision, currentVersion: app.getVersion() }
+  return { ...appUpdates.state(), configRevision, currentVersion: app.getVersion() }
 }
 
-function setUpdateState(next) {
-  updateState = { ...updateState, ...next }
+function broadcastUpdateState() {
   if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('mythos:update:state', currentUpdateState())
   }
 }
 
-function updaterFor(source) {
-  const updater = new MacUpdater(source)
-  updater.autoDownload = true
-  updater.autoInstallOnAppQuit = true
-  updater.on('checking-for-update', () => setUpdateState({ state: 'checking' }))
-  updater.on('update-available', info => setUpdateState({ state: 'downloading', version: info.version }))
-  updater.on('download-progress', progress => setUpdateState({ percent: Math.round(progress.percent), state: 'downloading' }))
-  updater.on('update-not-available', () => setUpdateState({ state: 'current' }))
-  updater.on('update-downloaded', info => setUpdateState({ percent: 100, state: 'ready', version: info.version }))
-  updater.on('error', () => {})
-  return updater
-}
-
 async function checkForUpdates() {
-  if (!app.isPackaged || updateState.state === 'checking' || updateState.state === 'downloading') {
-    return currentUpdateState()
-  }
-  setUpdateState({ percent: undefined, state: 'checking', version: undefined })
-  for (const source of updateSources) {
-    const updater = updaterFor(source)
-    activeUpdater = updater
-    try {
-      await updater.checkForUpdates()
-      return currentUpdateState()
-    } catch {
-      updater.removeAllListeners()
-    }
-  }
-  activeUpdater = undefined
-  setUpdateState({ state: 'unavailable' })
+  await appUpdates.check()
   return currentUpdateState()
 }
 
 async function checkProductConfig() {
   const result = await checkHotConfig(configCacheRoot(), hotConfigSources)
   configRevision = result.revision
-  setUpdateState({})
+  appUpdates.notify()
   if (result.updated && hostProcess !== undefined) await restartHost()
   return result
 }
@@ -388,9 +368,7 @@ ipcMain.handle('mythos:update:check', async () => {
   return await checkForUpdates()
 })
 ipcMain.handle('mythos:update:restart', () => {
-  if (updateState.state !== 'ready' || activeUpdater === undefined) return false
-  activeUpdater.quitAndInstall(false, true)
-  return true
+  return appUpdates.restartAndUpdate()
 })
 
 checkpoint('main module loaded')
