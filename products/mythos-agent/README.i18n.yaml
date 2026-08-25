@@ -1,2 +1,6 @@
-README.md: a0d2234f2b94ad81b615e0a8891737bb2c2cbc61
-README.zh.md: 702579c714d0397eb670ddd365db81949bc44941
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write products/mythos-agent/README.md
+README.md: ca50c9804d45f099d643880dd3611e60e545c5f6
+README.zh.md: 895f7cb5ae2a32d760e0964e9483cbe84705271f
