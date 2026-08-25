@@ -110,6 +110,15 @@ export async function verifyRuntimeTree(root) {
   }
 }
 
+/** Re-seal a release inventory after Desktop-specific native code signing. */
+export async function rewriteRuntimeIntegrityManifest(root) {
+  const manifestPath = join(root, 'release-integrity.json')
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+  parsedManifest(manifest)
+  manifest.entries = await collectEntries(await realpath(root))
+  await writeFile(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`, { mode: 0o644 })
+}
+
 async function activate({ archive, digestFile, storeRoot, verifyRelease }) {
   const digestLine = (await readFile(digestFile, 'utf8')).trim()
   const digest = /^([a-f0-9]{64})(?:\s{2}.+)?$/u.exec(digestLine)?.[1]

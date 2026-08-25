@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "electron .",
     "pack:config": "node scripts/pack-hot-config.mjs",
-    "pack:mac": "electron-builder --mac dir dmg zip --arm64 --config electron-builder.config.mjs",
+    "pack:mac": "node scripts/pack-macos.mjs",
     "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {

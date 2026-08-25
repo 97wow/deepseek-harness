@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/process/2026-08-25-desktop-runtime-archive-activation.md
-2026-08-25-desktop-runtime-archive-activation.md: 0f09d50130c076cfc999f51864d64302c62a8eee
-2026-08-25-desktop-runtime-archive-activation.zh.md: cd0bc4c2b6a3a9ecb5dedce0e55e90f5ee626865
+2026-08-25-desktop-runtime-archive-activation.md: bc838b7d80e42b97f0de1e5a5519cef7508ed084
+2026-08-25-desktop-runtime-archive-activation.zh.md: b6f62ceb0c5dcf508de9a328868f8ca685ce5dd8

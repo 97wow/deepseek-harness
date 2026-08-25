@@ -6,7 +6,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
-import { activatePackagedRuntime, validateRuntimeArchiveEntries } from '../src/runtime-store.mjs'
+import {
+  activatePackagedRuntime,
+  rewriteRuntimeIntegrityManifest,
+  validateRuntimeArchiveEntries,
+  verifyRuntimeTree,
+} from '../src/runtime-store.mjs'
 
 const execute = promisify(execFile)
 
@@ -68,6 +73,23 @@ test('rejects an archive whose signed digest does not match', async () => {
       digestFile: `${archive}.sha256`,
       storeRoot: join(root, 'store'),
     }), /SHA-256/u)
+  } finally {
+    await rm(root, { force: true, recursive: true })
+  }
+})
+
+test('re-seals the integrity inventory after native signing changes release bytes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mythos-runtime-reseal-'))
+  try {
+    await mkdir(join(root, 'bin'), { recursive: true })
+    await mkdir(join(root, 'home', 'profiles', 'mythos-web'), { recursive: true })
+    await mkdir(join(root, 'runtime', 'dsh', 'lib'), { recursive: true })
+    await writeFile(join(root, 'bin', 'mythos.js'), 'signed bytes\n')
+    await writeFile(join(root, 'home', 'profiles', 'mythos-web', 'cordis.patch.yml'), 'name: test\n')
+    await writeFile(join(root, 'runtime', 'dsh', 'lib', 'bin.js'), 'export {}\n')
+    await writeFile(join(root, 'release-integrity.json'), '{"formatVersion":1,"entries":[]}\n')
+    await rewriteRuntimeIntegrityManifest(root)
+    await assert.doesNotReject(() => verifyRuntimeTree(root))
   } finally {
     await rm(root, { force: true, recursive: true })
   }

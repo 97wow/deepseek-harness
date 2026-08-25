@@ -1,9 +1,9 @@
 import { resolve } from 'node:path'
 import { signMacApplication } from './scripts/sign-macos.mjs'
 
-const runtimeArchive = process.env.MYTHOS_RUNTIME_ARCHIVE
+const runtimeArchive = process.env.MYTHOS_SIGNED_RUNTIME_ARCHIVE
 if (runtimeArchive === undefined || runtimeArchive === '') {
-  throw new Error('MYTHOS_RUNTIME_ARCHIVE must name a packed Mythos release')
+  throw new Error('MYTHOS_SIGNED_RUNTIME_ARCHIVE must name the prepared Desktop runtime')
 }
 const signingIdentity = process.env.MYTHOS_MAC_SIGN_IDENTITY
 
