@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
-import { archiveReleaseTree, assertNoAbsoluteBuildRoots, buildWebFrontend, normalizeReleaseMetadata } from './pack.js'
+import { archiveReleaseTree, assertNoAbsoluteBuildRoots, buildReleaseArtifacts, normalizeReleaseMetadata } from './pack.js'
 
 const temporaryRoots: string[] = []
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -32,12 +32,13 @@ describe('Mythos 发布包确定性', () => {
     await expect(assertNoAbsoluteBuildRoots(releaseRoot, [repositoryRoot, stagingRoot])).rejects.toThrow('绝对构建根')
   })
 
-  it('不依赖预构建 dist 即可从 frozen workspace 构建 Web frontend', async () => {
+  it('不依赖预构建 dist 即可从 frozen workspace 构建完整发布产物', async () => {
     const webDist = join(repositoryRoot, 'apps', 'web', 'dist')
-    await rm(webDist, { force: true, recursive: true })
-    await buildWebFrontend()
+    const cliDist = join(repositoryRoot, 'apps', 'cli', 'lib')
+    await buildReleaseArtifacts()
     await expect(access(join(webDist, 'index.html'))).resolves.toBeUndefined()
-  }, 30_000)
+    await expect(access(join(cliDist, 'bin.js'))).resolves.toBeUndefined()
+  }, 120_000)
 
   it('跨墙钟创建的独立 staging 产生相同归档字节', async () => {
     const firstRoot = await stagingFixture()

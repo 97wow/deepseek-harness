@@ -26,8 +26,8 @@ function openSettings() {
   const panel = createElement('section', 'mythos-settings')
   panel.setAttribute('role', 'dialog')
   panel.setAttribute('aria-modal', 'true')
-  panel.setAttribute('aria-label', '设置')
-  const title = createElement('h2', '', '设置')
+  panel.setAttribute('aria-label', '应用状态与更新')
+  const title = createElement('h2', '', '应用状态与更新')
   const service = createElement('section', 'mythos-settings__service')
   const serviceCopy = createElement('div')
   serviceCopy.append(
@@ -120,14 +120,14 @@ window.addEventListener('DOMContentLoaded', () => {
   const status = createElement('div', 'mythos-desktop-bar__status', '服务可用')
   status.title = '智能服务：MYTHOS\n模型：claude-sonnet-5'
   const actions = createElement('div', 'mythos-desktop-bar__actions')
-  const settings = createElement('button', '', '设置')
+  const settings = createElement('button', '', '更新')
   settings.addEventListener('click', openSettings)
   const presentTopLevelUpdate = state => {
     if (state.state === 'ready') {
-      settings.textContent = '重启以更新'
+      settings.textContent = '重启更新'
       settings.title = `版本 ${state.version} 已下载；点击查看更新选项`
     } else {
-      settings.textContent = '设置'
+      settings.textContent = '更新'
       settings.removeAttribute('title')
     }
   }

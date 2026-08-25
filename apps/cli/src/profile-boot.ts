@@ -83,6 +83,26 @@ export function resolveTelemetryPatch(disabledEnv: string | undefined, hasRow: b
 }
 
 /**
+ * Keep a profile's explicit Agent Preset roots, falling back to the CLI's
+ * shipped catalog only when the profile did not select a catalog itself.
+ * @param config - composed `agent-presets` row config.
+ * @param shippedRoot - absolute in-box preset directory.
+ * @returns config with one effective root list.
+ */
+export function resolveAgentPresetConfig(
+  config: Record<string, unknown>,
+  shippedRoot: string,
+): Record<string, unknown> {
+  const configuredRoots = Array.isArray(config.roots) ? config.roots : []
+  return {
+    ...config,
+    roots: configuredRoots.length > 0
+      ? configuredRoots
+      : [{ path: shippedRoot, trust: 'system' }],
+  }
+}
+
+/**
  * Load a resolved profile for `name`: heal the shared module fallback, then
  * (re)write the empty root config. The root is always rewritten: the whole
  * composition is patch layers, and the vendored Loader's tree write-back (a
@@ -152,17 +172,14 @@ function composeProfile(
     if (typeof row.id === 'string') rows.set(row.id, row)
   }
   const composedOverlays = [...overlays]
-  // The SHIPPED root is the part of the roster only this app can resolve: it
-  // sits beside this app's own config, in both the source and built layouts.
-  // The writable root the roster appends is `dsh-agent-presets`' own, so a
-  // launcher that never reaches this patch still finds a person's presets.
+  // Profiles without an explicit catalog use the CLI's shipped presets. A
+  // product profile may intentionally replace that catalog with a controlled
+  // root; preserving it is required for durable sessions to resume by id.
   if (rows.has('agent-presets')) {
+    const config = (rows.get('agent-presets')?.config ?? {}) as Record<string, unknown>
     composedOverlays.push({
       id: 'agent-presets',
-      config: {
-        ...(rows.get('agent-presets')?.config ?? {}) as Record<string, unknown>,
-        roots: [{ path: SHIPPED_PRESET_ROOT, trust: 'system' }],
-      },
+      config: resolveAgentPresetConfig(config, SHIPPED_PRESET_ROOT),
     })
   }
   const telemetryPatch = resolveTelemetryPatch(process.env.DSH_TELEMETRY_DISABLED, rows.has(TELEMETRY_ROW_ID))

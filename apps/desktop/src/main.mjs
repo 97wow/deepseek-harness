@@ -30,6 +30,7 @@ const hotConfigSources = [
   },
 ]
 let hostProcess
+let activeHostUrl
 let mainWindow
 let activeEndpoint
 let activeUpdater
@@ -75,6 +76,21 @@ async function ensureHome() {
     await cp(sourceHome(), home, { recursive: true })
   }
   const configSource = await productConfigSource()
+  // These profile entry files are not hot-config assets, but they still belong
+  // to the application release. Refresh them on every launch so an upgraded
+  // Desktop never keeps an older profile resolver around newer patch files.
+  for (const relativePath of [
+    join('profiles', 'mythos', 'cordis.yml'),
+    join('profiles', 'mythos', 'package.json'),
+    join('profiles', 'mythos', 'pnpm-workspace.yaml'),
+    join('profiles', 'mythos-web', 'cordis.yml'),
+    join('profiles', 'mythos-web', 'package.json'),
+    join('profiles', 'mythos-web', 'pnpm-workspace.yaml'),
+  ]) {
+    const destination = join(home, relativePath)
+    await mkdir(dirname(destination), { recursive: true })
+    await cp(join(sourceHome(), relativePath), destination)
+  }
   // Product-owned composition advances with the Desktop build while sessions,
   // credentials, workspace state, and local settings remain untouched.
   for (const relativePath of [
@@ -87,6 +103,15 @@ async function ensureHome() {
     const destination = join(home, relativePath)
     await mkdir(dirname(destination), { recursive: true })
     await cp(join(configSource, relativePath), destination)
+  }
+  const [webProfile, preset] = await Promise.all([
+    readFile(join(home, 'profiles', 'mythos-web', 'cordis.patch.yml'), 'utf8'),
+    readFile(join(home, '.agent-presets', 'mythos', 'preset.yml'), 'utf8'),
+  ])
+  if (!/default:\s*mythos/u.test(webProfile)
+    || !webProfile.includes("process.env.DSH_HOME + '/.agent-presets'")
+    || !/^name:\s*Mythos Agent\s*$/mu.test(preset)) {
+    throw new Error('MYTHOS Agent 预设资源不完整，已停止启动以避免创建无法恢复的会话')
   }
   return home
 }
@@ -167,7 +192,10 @@ async function resolvedEnvironment() {
 }
 
 async function startHost() {
-  if (hostProcess !== undefined) return
+  if (hostProcess !== undefined) {
+    if (activeHostUrl === undefined) throw new Error('MYTHOS Host 正在启动，请稍后重试')
+    return activeHostUrl
+  }
   const port = await availablePort()
   const home = await ensureHome()
   const credential = await resolvedEnvironment()
@@ -196,6 +224,7 @@ async function startHost() {
   hostProcess.once('exit', code => {
     if (code !== 0) process.stderr.write(`[MYTHOS Desktop] Host exit ${String(code)}\n${diagnostics}\n`)
     hostProcess = undefined
+    activeHostUrl = undefined
     if (!app.isQuitting && mainWindow !== undefined && !mainWindow.isDestroyed()) {
       void mainWindow.loadFile(join(here, 'loading.html')).then(() => {
         mainWindow.webContents.executeJavaScript(`document.querySelector('.step.active').textContent = ${JSON.stringify(`Host 已停止（${String(code)}）`)}`)
@@ -212,13 +241,15 @@ async function startHost() {
     hostProcess.once('error', error => { clearTimeout(timer); reject(error) })
     hostProcess.once('exit', code => { clearTimeout(timer); reject(new Error(`DSH Host 启动失败（${String(code)}）\n${diagnostics}`)) })
   })
-  return `http://127.0.0.1:${String(port)}`
+  activeHostUrl = `http://127.0.0.1:${String(port)}`
+  return activeHostUrl
 }
 
 async function stopHost() {
   const child = hostProcess
   if (child === undefined) return
   hostProcess = undefined
+  activeHostUrl = undefined
   child.kill('SIGTERM')
   await Promise.race([
     new Promise(resolveExit => child.once('exit', resolveExit)),
@@ -319,6 +350,7 @@ async function createWindow() {
       sandbox: false,
     },
   })
+  mainWindow.once('closed', () => { mainWindow = undefined })
   checkpoint('BrowserWindow created')
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) void shell.openExternal(url)
@@ -362,14 +394,32 @@ ipcMain.handle('mythos:update:restart', () => {
 })
 
 checkpoint('main module loaded')
-app.on('before-quit', () => { app.isQuitting = true })
-app.on('before-quit-for-update', () => {
-  app.isQuitting = true
-  hostProcess?.kill('SIGTERM')
-})
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow() })
+const primaryInstance = app.requestSingleInstanceLock()
+if (!primaryInstance) {
+  checkpoint('another Desktop instance already owns the session store')
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow === undefined || mainWindow.isDestroyed()) {
+      void createWindow()
+      return
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  })
+  app.on('before-quit', () => {
+    app.isQuitting = true
+    hostProcess?.kill('SIGTERM')
+  })
+  app.on('before-quit-for-update', () => {
+    app.isQuitting = true
+    hostProcess?.kill('SIGTERM')
+  })
+  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow() })
 
-await app.whenReady()
-checkpoint('app ready')
-await createWindow()
+  await app.whenReady()
+  checkpoint('app ready')
+  await createWindow()
+}

@@ -42,13 +42,20 @@ function buildEnvironment(): NodeJS.ProcessEnv {
   return environment
 }
 
-/** Rebuild the Web shell from the frozen workspace without inherited release credentials. */
-export async function buildWebFrontend(): Promise<void> {
+/** Rebuild every workspace artifact consumed by the release closure. */
+export async function buildReleaseArtifacts(): Promise<void> {
   const webDist = join(repositoryRoot, 'apps', 'web', 'dist')
-  // Never let an ignored/pre-existing frontend hide a fresh-clone build gap.
+  const cliDist = join(repositoryRoot, 'apps', 'cli', 'lib')
+  // Never let ignored/pre-existing output hide a fresh-clone or stale-build gap.
   await rm(webDist, { force: true, recursive: true })
+  await rm(cliDist, { force: true, recursive: true })
   const environment = buildEnvironment()
   execFileSync('pnpm', ['install', '--offline', '--frozen-lockfile'], {
+    cwd: repositoryRoot,
+    env: environment,
+    stdio: 'inherit',
+  })
+  execFileSync('pnpm', ['run', 'build:lib'], {
     cwd: repositoryRoot,
     env: environment,
     stdio: 'inherit',
@@ -60,6 +67,8 @@ export async function buildWebFrontend(): Promise<void> {
   })
   const index = await lstat(join(webDist, 'index.html'))
   if (!index.isFile() || index.isSymbolicLink()) throw new Error('Mythos Web frontend build 未生成普通 dist/index.html')
+  const cli = await lstat(join(cliDist, 'bin.js'))
+  if (!cli.isFile() || cli.isSymbolicLink()) throw new Error('Mythos DSH CLI build 未生成普通 lib/bin.js')
 }
 
 async function copyTrackedHome(releaseRoot: string): Promise<void> {
@@ -280,7 +289,7 @@ async function stageRelease(stagingRoot: string, manifest: ProductManifest, sour
  */
 export async function packRelease(): Promise<PackedRelease> {
   await checkRelease({ requireClean: false })
-  await buildWebFrontend()
+  await buildReleaseArtifacts()
   const manifest = JSON.parse(await readFile(join(productRoot, 'package.json'), 'utf8')) as ProductManifest
   const sourceCommit = git(['rev-parse', 'HEAD'])
   const shortCommit = sourceCommit.slice(0, 12)

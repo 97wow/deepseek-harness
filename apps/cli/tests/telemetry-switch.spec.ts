@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveTelemetryPatch } from '../src/profile-boot.ts'
+import { resolveAgentPresetConfig, resolveTelemetryPatch } from '../src/profile-boot.ts'
 
 describe('resolveTelemetryPatch', () => {
   it('preserves the configured telemetry mode when the hard-disable switch is unset or empty', () => {
@@ -18,5 +18,22 @@ describe('resolveTelemetryPatch', () => {
     // privacy switch has nothing to disable and generates no patch.
     expect(resolveTelemetryPatch('1', false)).toBeUndefined()
     expect(resolveTelemetryPatch(undefined, false)).toBeUndefined()
+  })
+})
+
+describe('resolveAgentPresetConfig', () => {
+  it('preserves an explicit product catalog', () => {
+    const roots = [{ path: '/product/.agent-presets', trust: 'system' }]
+    expect(resolveAgentPresetConfig({ default: 'mythos', roots }, '/cli/presets')).toEqual({
+      default: 'mythos',
+      roots,
+    })
+  })
+
+  it('supplies the CLI catalog when the profile does not choose one', () => {
+    expect(resolveAgentPresetConfig({ default: 'standard' }, '/cli/presets')).toEqual({
+      default: 'standard',
+      roots: [{ path: '/cli/presets', trust: 'system' }],
+    })
   })
 })

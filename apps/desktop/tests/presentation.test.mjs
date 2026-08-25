@@ -46,4 +46,16 @@ test('does not expose managed endpoints, credentials, presets, models, or plugin
   assert.doesNotMatch(source, /d\.llmapi\.pro|服务地址|API Key|高级 \/ 技术信息/u)
   assert.doesNotMatch(source, /Agent 预设|模型配置|插件管理/u)
   assert.match(source, /应用更新|检查更新|测试连接/u)
+  assert.match(source, /应用状态与更新/u)
+  assert.match(source, /createElement\('button', '', '更新'\)/u)
+  assert.doesNotMatch(source, /createElement\('button', '', '设置'\)/u)
+})
+
+test('Desktop owns one Host and refreshes the complete profile entry set', async () => {
+  const source = await readFile(new URL('../src/main.mjs', import.meta.url), 'utf8')
+  assert.match(source, /requestSingleInstanceLock\(\)/u)
+  assert.match(source, /hostProcess\?\.kill\('SIGTERM'\)/u)
+  assert.match(source, /profiles', 'mythos-web', 'cordis\.yml/u)
+  assert.match(source, /profiles', 'mythos-web', 'package\.json/u)
+  assert.match(source, /Agent 预设资源不完整/u)
 })
