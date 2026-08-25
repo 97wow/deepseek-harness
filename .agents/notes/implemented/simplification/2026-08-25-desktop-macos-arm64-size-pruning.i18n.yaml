@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/simplification/2026-08-25-desktop-macos-arm64-size-pruning.md
-2026-08-25-desktop-macos-arm64-size-pruning.md: 322f6bd2e012086cd375459a58e07351b751aa8e
-2026-08-25-desktop-macos-arm64-size-pruning.zh.md: 235604904993ee6bc9997c694715204f072e684d
+2026-08-25-desktop-macos-arm64-size-pruning.md: b4e1cc33b9d53e23190d6c3b74d6efda14dd5e17
+2026-08-25-desktop-macos-arm64-size-pruning.zh.md: fbc7e29824ea9d99cbe03dce31e701b5213cf6bf

@@ -28,4 +28,4 @@ Desktop 专用 Runtime 归档在签名与重新封装前，定位包含 `darwin-
 
 App 安装体积从约 326 MB 降至 276 MB。Runtime 归档从 51,284,783 字节降至 45,425,145 字节，DMG 从 170,257,780 字节降至 152,646,197 字节，ZIP 从 170,195,156 字节降至 152,379,719 字节。这是在低风险边界内减少约 50 MB 安装体积和 17.6 MB 下载体积；剩余 229 MB Frameworks 目录主要属于 Electron，若不进行更大规模的壳层改造就无法消除。
 
-实际分发 ZIP 已通过严格代码签名校验、Stapler 验证、Notarized Developer ID Gatekeeper 验收、首次 Runtime 激活、Host 启动和 Web HTTP 200 检查。单元测试同时固定了不兼容预构建文件的删除行为，以及其他包的预构建树不得受影响的规则。
+实际分发 ZIP 已通过严格代码签名校验、Stapler 验证、Notarized Developer ID Gatekeeper 验收、首次 Runtime 激活、Host 启动和 Web HTTP 200 检查。已签名 Beta 7 安装随后通过 GitHub 后备源发现 Beta 8，经差分更新下载约 45.7 MB（31%）后原地安装，成功激活裁剪后的 Runtime 并返回 HTTP 200。单元测试同时固定了不兼容预构建文件的删除行为，以及其他包的预构建树不得受影响的规则。
