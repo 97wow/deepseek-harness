@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { JSDOM } from 'jsdom'
 import { adaptMythosSurface, executionStatus } from '../src/presentation.mjs'
@@ -38,4 +39,11 @@ test('derives plain-language running status without changing event names', () =>
   adaptMythosSurface(dom.window.document.body, status)
   assert.equal(dom.window.document.querySelector('button')?.textContent, '读取')
   assert.equal(status.textContent, 'MYTHOS 正在读取…')
+})
+
+test('does not expose managed endpoints, credentials, presets, models, or plugins in Desktop settings', async () => {
+  const source = await readFile(new URL('../src/preload.mjs', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /d\.llmapi\.pro|服务地址|API Key|高级 \/ 技术信息/u)
+  assert.doesNotMatch(source, /Agent 预设|模型配置|插件管理/u)
+  assert.match(source, /应用更新|检查更新|测试连接/u)
 })

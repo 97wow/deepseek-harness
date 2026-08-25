@@ -4,6 +4,7 @@ const runtimeRoot = process.env.MYTHOS_RUNTIME_ROOT
 if (runtimeRoot === undefined || runtimeRoot === '') {
   throw new Error('MYTHOS_RUNTIME_ROOT must name an extracted Mythos release')
 }
+const signingIdentity = process.env.MYTHOS_MAC_SIGN_IDENTITY
 
 export default {
   appId: 'pro.llmapi.mythos.desktop',
@@ -22,13 +23,17 @@ export default {
     'src/**/*',
     'package.json',
   ],
+  publish: [{
+    provider: 'generic',
+    url: 'https://llmapi.pro/mythos/desktop/updates/macos/arm64',
+  }],
   extraResources: [{ from: runtimeRoot, to: 'mythos-agent' }],
   mac: {
     category: 'public.app-category.developer-tools',
     darkModeSupport: true,
-    hardenedRuntime: false,
-    identity: null,
-    target: ['dir', 'dmg'],
+    hardenedRuntime: signingIdentity !== undefined,
+    identity: signingIdentity ?? null,
+    target: ['dir', 'dmg', 'zip'],
   },
   dmg: {
     backgroundColor: '#0d1624',

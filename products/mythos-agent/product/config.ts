@@ -97,7 +97,13 @@ export async function verifyProductProfiles(productRoot: string): Promise<void> 
   }
 
   const agentPresets = rowConfig(webRows, 'agent-presets')
-  if (agentPresets.default !== 'mythos' || agentPresets.includeUserRoot !== false) {
+  const presetRoots = agentPresets.roots
+  if (agentPresets.default !== 'mythos'
+    || agentPresets.includeUserRoot !== false
+    || !Array.isArray(presetRoots)
+    || presetRoots.length !== 1
+    || object(presetRoots[0], 'agent-presets.config.roots[0]').path !== "process.env.DSH_HOME + '/.agent-presets'"
+    || object(presetRoots[0], 'agent-presets.config.roots[0]').trust !== 'system') {
     throw new Error('Web Profile 必须固定 mythos Agent Preset 并禁止用户 Preset')
   }
 
@@ -112,7 +118,8 @@ export async function verifyProductProfiles(productRoot: string): Promise<void> 
 
   const providers = object(headless.llmPiAi.providers, 'llm-pi-ai.config.providers')
   const mythos = object(providers.mythos, 'llm-pi-ai.config.providers.mythos')
-  if (mythos.api !== 'anthropic-messages' || mythos.baseURL !== 'https://d.llmapi.pro:99') {
+  if (mythos.api !== 'anthropic-messages'
+    || mythos.baseURL !== "process.env.DEEPSEEK_BASE_URL ?? 'https://d.llmapi.pro:99'") {
     throw new Error('Mythos 模型必须使用受控网关的 Anthropic 路由')
   }
   if (mythos.apiKeyEnv !== 'DEEPSEEK_API_KEY' || mythos.reasoning !== 'high') {
@@ -138,7 +145,7 @@ export async function verifyProductProfiles(productRoot: string): Promise<void> 
   }
 
   const webSearch = rowConfig(webRows, 'web-search-deepseek')
-  if (webSearch.baseURL !== 'https://d.llmapi.pro:99/v1'
+  if (webSearch.baseURL !== "process.env.DEEPSEEK_SEARCH_BASE_URL ?? 'https://d.llmapi.pro:99/v1'"
     || webSearch.model !== 'claude-sonnet-5'
     || webSearch.allowTextSourceFallback !== true) {
     throw new Error('Web 搜索必须走受控网关的 claude-sonnet-5 路由')

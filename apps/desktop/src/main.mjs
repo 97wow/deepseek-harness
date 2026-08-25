@@ -1,17 +1,41 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { cp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import electronUpdater from 'electron-updater'
+import { activeConfigRoot, checkHotConfig } from './hot-config.mjs'
+import { loadServiceEndpoints, searchEndpoint, selectServiceEndpoint } from './service-routing.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const desktopRoot = resolve(here, '..')
 const repositoryRoot = resolve(desktopRoot, '..', '..')
-const defaultEndpoint = 'https://d.llmapi.pro:99'
+const { MacUpdater } = electronUpdater
+const updateSources = [
+  { provider: 'generic', url: 'https://llmapi.pro/mythos/desktop/updates/macos/arm64' },
+  { provider: 'github', owner: '97wow', repo: 'deepseek-harness' },
+]
+const hotConfigSources = [
+  {
+    assetBaseUrl: 'https://llmapi.pro/mythos/desktop/config/files/',
+    manifestUrl: 'https://llmapi.pro/mythos/desktop/config/manifest.json',
+    signatureUrl: 'https://llmapi.pro/mythos/desktop/config/manifest.json.sig',
+  },
+  {
+    assetBaseUrl: 'https://github.com/97wow/deepseek-harness/releases/latest/download/',
+    manifestUrl: 'https://github.com/97wow/deepseek-harness/releases/latest/download/mythos-config-manifest.json',
+    signatureUrl: 'https://github.com/97wow/deepseek-harness/releases/latest/download/mythos-config-manifest.json.sig',
+  },
+]
 let hostProcess
 let mainWindow
+let activeEndpoint
+let activeUpdater
+let updateInitialized = false
+let updateState = { state: 'idle' }
+let configRevision = 0
 
 function checkpoint(message) {
   process.stdout.write(`[MYTHOS Desktop] ${message}\n`)
@@ -30,6 +54,14 @@ function sourceHome() {
     : join(bundled, 'home')
 }
 
+function configCacheRoot() {
+  return join(app.getPath('userData'), 'product-config')
+}
+
+async function productConfigSource() {
+  return await activeConfigRoot(configCacheRoot()) ?? sourceHome()
+}
+
 async function ensureHome() {
   if (!app.isPackaged && releaseRoot() === undefined) {
     const home = sourceHome()
@@ -42,17 +74,19 @@ async function ensureHome() {
     await mkdir(home, { recursive: true })
     await cp(sourceHome(), home, { recursive: true })
   }
+  const configSource = await productConfigSource()
   // Product-owned composition advances with the Desktop build while sessions,
   // credentials, workspace state, and local settings remain untouched.
   for (const relativePath of [
     join('.agent-presets', 'mythos', 'agent.cordis.yml'),
     join('.agent-presets', 'mythos', 'preset.yml'),
+    join('desktop', 'service-routing.json'),
     join('profiles', 'mythos', 'cordis.patch.yml'),
     join('profiles', 'mythos-web', 'cordis.patch.yml'),
   ]) {
     const destination = join(home, relativePath)
     await mkdir(dirname(destination), { recursive: true })
-    await cp(join(sourceHome(), relativePath), destination)
+    await cp(join(configSource, relativePath), destination)
   }
   return home
 }
@@ -75,7 +109,7 @@ async function readDotEnv() {
       const source = await readFile(path, 'utf8')
       const result = {}
       for (const line of source.split(/\r?\n/u)) {
-        const match = /^\s*(DEEPSEEK_API_KEY|DEEPSEEK_BASE_URL)\s*=\s*(.*?)\s*$/u.exec(line)
+        const match = /^\s*(DEEPSEEK_API_KEY)\s*=\s*(.*?)\s*$/u.exec(line)
         if (match?.[1] === undefined || match[2] === undefined) continue
         result[match[1]] = match[2].replace(/^(['"])(.*)\1$/u, '$2')
       }
@@ -96,33 +130,14 @@ async function readSettings() {
     const stored = JSON.parse(await readFile(settingsPath(), 'utf8'))
     const encrypted = typeof stored.encryptedKey === 'string' ? stored.encryptedKey : ''
     return {
-      endpoint: validatedEndpoint(stored.endpoint ?? defaultEndpoint),
       key: encrypted === '' || !safeStorage.isEncryptionAvailable()
         ? ''
         : safeStorage.decryptString(Buffer.from(encrypted, 'base64')),
     }
   } catch (error) {
-    if (error?.code === 'ENOENT') return { endpoint: defaultEndpoint, key: '' }
+    if (error?.code === 'ENOENT') return { key: '' }
     throw error
   }
-}
-
-function validatedEndpoint(value) {
-  const url = new URL(value)
-  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') {
-    throw new Error('Endpoint 必须是没有内嵌凭据的 HTTPS 地址')
-  }
-  return url.toString().replace(/\/$/u, '')
-}
-
-async function writeSettings(input) {
-  const current = await readSettings()
-  const endpoint = validatedEndpoint(input.endpoint)
-  const key = typeof input.key === 'string' && input.key !== '' ? input.key : current.key
-  if (key !== '' && !safeStorage.isEncryptionAvailable()) throw new Error('macOS 安全存储当前不可用')
-  const encryptedKey = key === '' ? '' : safeStorage.encryptString(key).toString('base64')
-  await mkdir(dirname(settingsPath()), { recursive: true })
-  await writeFile(settingsPath(), `${JSON.stringify({ endpoint, encryptedKey })}\n`, { mode: 0o600 })
 }
 
 async function availablePort() {
@@ -140,9 +155,14 @@ async function availablePort() {
 
 async function resolvedEnvironment() {
   const [stored, dotenv] = await Promise.all([readSettings(), readDotEnv()])
+  const key = stored.key || process.env.DEEPSEEK_API_KEY || dotenv.DEEPSEEK_API_KEY || ''
+  const endpoints = await loadServiceEndpoints(await productConfigSource())
+  const route = await selectServiceEndpoint(key, fetch, endpoints)
+  activeEndpoint = route.endpoint
   return {
-    endpoint: stored.endpoint || dotenv.DEEPSEEK_BASE_URL || defaultEndpoint,
-    key: stored.key || process.env.DEEPSEEK_API_KEY || dotenv.DEEPSEEK_API_KEY || '',
+    endpoint: route.endpoint,
+    key,
+    reachable: route.reachable,
   }
 }
 
@@ -154,6 +174,7 @@ async function startHost() {
   const env = {
     ...process.env,
     DEEPSEEK_BASE_URL: credential.endpoint,
+    DEEPSEEK_SEARCH_BASE_URL: searchEndpoint(credential.endpoint),
     DSH_HOME: home,
     // Electron owns the visible desktop lifetime. Keep directory selection in
     // DSH Web so one UI request maps to one Host registration and cannot
@@ -214,6 +235,71 @@ async function restartHost() {
   await mainWindow.loadURL(url)
 }
 
+function currentUpdateState() {
+  return { ...updateState, configRevision, currentVersion: app.getVersion() }
+}
+
+function setUpdateState(next) {
+  updateState = { ...updateState, ...next }
+  if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('mythos:update:state', currentUpdateState())
+  }
+}
+
+function updaterFor(source) {
+  const updater = new MacUpdater(source)
+  updater.autoDownload = true
+  updater.autoInstallOnAppQuit = true
+  updater.on('checking-for-update', () => setUpdateState({ state: 'checking' }))
+  updater.on('update-available', info => setUpdateState({ state: 'downloading', version: info.version }))
+  updater.on('download-progress', progress => setUpdateState({ percent: Math.round(progress.percent), state: 'downloading' }))
+  updater.on('update-not-available', () => setUpdateState({ state: 'current' }))
+  updater.on('update-downloaded', info => setUpdateState({ percent: 100, state: 'ready', version: info.version }))
+  updater.on('error', () => {})
+  return updater
+}
+
+async function checkForUpdates() {
+  if (!app.isPackaged || updateState.state === 'checking' || updateState.state === 'downloading') {
+    return currentUpdateState()
+  }
+  setUpdateState({ percent: undefined, state: 'checking', version: undefined })
+  for (const source of updateSources) {
+    const updater = updaterFor(source)
+    activeUpdater = updater
+    try {
+      await updater.checkForUpdates()
+      return currentUpdateState()
+    } catch {
+      updater.removeAllListeners()
+    }
+  }
+  activeUpdater = undefined
+  setUpdateState({ state: 'unavailable' })
+  return currentUpdateState()
+}
+
+async function checkProductConfig() {
+  const result = await checkHotConfig(configCacheRoot(), hotConfigSources)
+  configRevision = result.revision
+  setUpdateState({})
+  if (result.updated && hostProcess !== undefined) await restartHost()
+  return result
+}
+
+function initializeUpdates() {
+  if (updateInitialized) return
+  updateInitialized = true
+  const initialConfig = setTimeout(() => { void checkProductConfig() }, 3000)
+  initialConfig.unref()
+  const initial = setTimeout(() => { void checkForUpdates() }, 8000)
+  initial.unref()
+  const recurringConfig = setInterval(() => { void checkProductConfig() }, 30 * 60 * 1000)
+  recurringConfig.unref()
+  const recurring = setInterval(() => { void checkForUpdates() }, 6 * 60 * 60 * 1000)
+  recurring.unref()
+}
+
 async function createWindow() {
   checkpoint('createWindow')
   mainWindow = new BrowserWindow({
@@ -249,6 +335,7 @@ async function createWindow() {
     await mainWindow.loadURL(url)
     checkpoint('DSH Web loaded')
     await mainWindow.webContents.insertCSS(await readFile(join(here, 'desktop-theme.css'), 'utf8'))
+    initializeUpdates()
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     process.stderr.write(`[MYTHOS Desktop] startup failed: ${message}\n`)
@@ -256,23 +343,30 @@ async function createWindow() {
   }
 }
 
-ipcMain.handle('mythos:settings:get', async () => {
-  const settings = await resolvedEnvironment()
-  return { endpoint: settings.endpoint, hasKey: settings.key !== '' }
+ipcMain.handle('mythos:settings:test', async () => {
+  const previousEndpoint = activeEndpoint
+  const credential = await resolvedEnvironment()
+  const changed = previousEndpoint !== undefined && previousEndpoint !== credential.endpoint
+  if (changed) await restartHost()
+  return { ok: credential.reachable && hostProcess !== undefined && hostProcess.exitCode === null }
 })
-ipcMain.handle('mythos:settings:test', async () => ({
-  ok: hostProcess !== undefined && hostProcess.exitCode === null,
-}))
-ipcMain.handle('mythos:settings:save', async (_event, input) => {
-  if (typeof input !== 'object' || input === null || typeof input.endpoint !== 'string' || typeof input.key !== 'string') {
-    throw new Error('设置格式无效')
-  }
-  await writeSettings(input)
-  await restartHost()
+ipcMain.handle('mythos:update:get', () => currentUpdateState())
+ipcMain.handle('mythos:update:check', async () => {
+  await checkProductConfig()
+  return await checkForUpdates()
+})
+ipcMain.handle('mythos:update:restart', () => {
+  if (updateState.state !== 'ready' || activeUpdater === undefined) return false
+  activeUpdater.quitAndInstall(false, true)
+  return true
 })
 
 checkpoint('main module loaded')
 app.on('before-quit', () => { app.isQuitting = true })
+app.on('before-quit-for-update', () => {
+  app.isQuitting = true
+  hostProcess?.kill('SIGTERM')
+})
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow() })
 

@@ -2,11 +2,17 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { adaptMythosSurface } from './presentation.mjs'
 
 const api = {
-  getSettings: () => ipcRenderer.invoke('mythos:settings:get'),
-  saveSettings: settings => ipcRenderer.invoke('mythos:settings:save', settings),
   testConnection: () => ipcRenderer.invoke('mythos:settings:test'),
+  getUpdateState: () => ipcRenderer.invoke('mythos:update:get'),
+  checkForUpdates: () => ipcRenderer.invoke('mythos:update:check'),
+  restartAndUpdate: () => ipcRenderer.invoke('mythos:update:restart'),
 }
 contextBridge.exposeInMainWorld('mythosDesktop', api)
+
+const updatePresenters = new Set()
+ipcRenderer.on('mythos:update:state', (_event, state) => {
+  for (const present of updatePresenters) present(state)
+})
 
 function createElement(tag, className, text) {
   const element = document.createElement(tag)
@@ -31,69 +37,78 @@ function openSettings() {
   const test = createElement('button', '', '测试连接')
   service.append(serviceCopy, test)
   const testResult = createElement('p', 'mythos-settings__result', 'MYTHOS 已准备好处理项目任务。')
-  const advanced = createElement('details', 'mythos-settings__advanced')
-  const advancedSummary = createElement('summary', '', '高级 / 技术信息')
-  const technical = createElement('dl', 'mythos-settings__technical')
-  technical.innerHTML = '<div><dt>模型</dt><dd>claude-sonnet-5</dd></div>'
-  const note = createElement('p', '', '连接凭据由 macOS 安全存储加密，不进入网页存储或日志。')
-  const endpointLabel = createElement('label', '', '服务地址')
-  const endpoint = document.createElement('input')
-  endpoint.type = 'url'
-  endpoint.autocomplete = 'off'
-  const keyLabel = createElement('label', '', 'API Key')
-  const key = document.createElement('input')
-  key.type = 'password'
-  key.autocomplete = 'new-password'
-  key.spellcheck = false
-  endpointLabel.append(endpoint)
-  keyLabel.append(key)
-  advanced.append(advancedSummary, technical, note, endpointLabel, keyLabel)
+  const updates = createElement('section', 'mythos-settings__service')
+  const updateCopy = createElement('div')
+  const updateVersion = createElement('span', '', '正在读取版本…')
+  updateCopy.append(createElement('strong', '', '应用更新'), updateVersion)
+  const updateAction = createElement('button', '', '检查更新')
+  updates.append(updateCopy, updateAction)
+  const updateResult = createElement('p', 'mythos-settings__result', 'MYTHOS 会在后台自动检查并下载可用更新。')
   const foot = createElement('div', 'mythos-settings__foot')
-  const cancel = createElement('button', '', '取消')
-  const save = createElement('button', '', '保存')
-  save.dataset.primary = ''
-  foot.append(cancel, save)
-  panel.append(title, service, testResult, advanced, foot)
+  const closeButton = createElement('button', '', '关闭')
+  closeButton.dataset.primary = ''
+  foot.append(closeButton)
+  panel.append(title, service, testResult, updates, updateResult, foot)
   shade.append(panel)
   document.body.append(shade)
-  const close = () => shade.remove()
-  cancel.addEventListener('click', close)
+  const close = () => {
+    updatePresenters.delete(renderUpdate)
+    shade.remove()
+  }
+  closeButton.addEventListener('click', close)
   shade.addEventListener('click', event => { if (event.target === shade) close() })
   document.addEventListener('keydown', function escape(event) {
     if (event.key !== 'Escape' || !shade.isConnected) return
     document.removeEventListener('keydown', escape)
     close()
   })
-  void api.getSettings().then(settings => {
-    endpoint.value = settings.endpoint
-    key.placeholder = settings.hasKey ? '已安全保存；留空表示不修改' : '尚未配置'
-    test.focus()
-  })
+  test.focus()
   test.addEventListener('click', async () => {
     test.disabled = true
     test.textContent = '正在测试…'
     try {
       const result = await api.testConnection()
-      testResult.textContent = result.ok ? '连接正常，服务可用。' : '当前无法连接，请展开高级设置检查连接信息。'
+      testResult.textContent = result.ok ? '连接正常，服务可用。' : '当前无法连接，MYTHOS 会自动切换备用线路并重试。'
     } catch {
-      testResult.textContent = '当前无法连接，请展开高级设置检查连接信息。'
+      testResult.textContent = '当前无法连接，MYTHOS 会自动切换备用线路并重试。'
     } finally {
       test.disabled = false
       test.textContent = '测试连接'
     }
   })
-  save.addEventListener('click', async () => {
-    save.disabled = true
-    save.textContent = '正在保存…'
-    try {
-      await api.saveSettings({ endpoint: endpoint.value, key: key.value })
-      key.value = ''
-      close()
-    } catch (error) {
-      note.textContent = error instanceof Error ? error.message : String(error)
-      save.disabled = false
-      save.textContent = '保存'
+  const renderUpdate = state => {
+    const configLabel = state.configRevision > 0 ? `配置 ${state.configRevision}` : '内置配置'
+    updateVersion.textContent = `当前版本 ${state.currentVersion} · ${configLabel}`
+    updateAction.disabled = state.state === 'checking' || state.state === 'downloading'
+    if (state.state === 'checking') {
+      updateAction.textContent = '正在检查…'
+      updateResult.textContent = '正在检查可用更新。'
+    } else if (state.state === 'downloading') {
+      updateAction.textContent = state.percent === undefined ? '正在下载…' : `下载 ${state.percent}%`
+      updateResult.textContent = '发现新版本，正在后台下载。'
+    } else if (state.state === 'ready') {
+      updateAction.disabled = false
+      updateAction.textContent = '重启并更新'
+      updateResult.textContent = `版本 ${state.version} 已下载。可以继续工作，稍后重启也会完成更新。`
+    } else if (state.state === 'current') {
+      updateAction.textContent = '再次检查'
+      updateResult.textContent = '当前已是最新版本。'
+    } else if (state.state === 'unavailable') {
+      updateAction.textContent = '重试检查'
+      updateResult.textContent = '暂时无法检查更新，不影响继续使用。'
+    } else {
+      updateAction.textContent = '检查更新'
+      updateResult.textContent = 'MYTHOS 会在后台自动检查并下载可用更新。'
     }
+  }
+  updatePresenters.add(renderUpdate)
+  void api.getUpdateState().then(renderUpdate)
+  updateAction.addEventListener('click', async () => {
+    if (updateAction.textContent === '重启并更新') {
+      await api.restartAndUpdate()
+      return
+    }
+    renderUpdate(await api.checkForUpdates())
   })
 }
 
@@ -107,6 +122,17 @@ window.addEventListener('DOMContentLoaded', () => {
   const actions = createElement('div', 'mythos-desktop-bar__actions')
   const settings = createElement('button', '', '设置')
   settings.addEventListener('click', openSettings)
+  const presentTopLevelUpdate = state => {
+    if (state.state === 'ready') {
+      settings.textContent = '重启以更新'
+      settings.title = `版本 ${state.version} 已下载；点击查看更新选项`
+    } else {
+      settings.textContent = '设置'
+      settings.removeAttribute('title')
+    }
+  }
+  updatePresenters.add(presentTopLevelUpdate)
+  ipcRenderer.invoke('mythos:update:get').then(presentTopLevelUpdate)
   actions.append(settings)
   bar.append(identity, status, actions)
   document.body.prepend(bar)

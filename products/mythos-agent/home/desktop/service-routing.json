@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "serviceEndpoints": [
+    "https://d.llmapi.pro:99",
+    "https://llmapi.pro"
+  ]
+}
