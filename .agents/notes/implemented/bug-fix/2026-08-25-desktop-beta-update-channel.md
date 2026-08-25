@@ -14,6 +14,12 @@ Every Desktop beta updater explicitly enables prereleases and selects the `beta`
 
 The assignment order is intentional: Electron Updater enables downgrades when its channel setter runs, so `allowDowngrade = false` must remain after `channel = 'beta'`.
 
+## Alternatives considered
+
+**Publish beta artifacts as `latest-mac.yml`.** This would make the existing generic provider request succeed, but it would blur stable and beta policy and make a later stable channel migration unsafe.
+
+**Keep product-prefixed release tags and customize GitHub discovery.** That requires maintaining provider behavior around Electron Updater and still leaves standard release tooling unable to compare versions directly. A SemVer-compatible tag is simpler and portable.
+
 ## Consequences
 
 Both the managed generic source and GitHub fallback request `beta-mac.yml`. Release automation must preserve SemVer-compatible tags, and tests pin prerelease, channel, and downgrade settings. A published artifact is not considered accepted until an older signed build discovers, downloads, and installs it.
