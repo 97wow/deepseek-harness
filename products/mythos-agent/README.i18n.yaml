@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write products/mythos-agent/README.md
-README.md: 1bf0e442123bff0c87923cded64341fe65bfef3d
-README.zh.md: b736d354569abe5ed6cec4d2b9566aba4e8647df
+README.md: 89b351fbd50fc76f6f08d4aaa2b574fdd8891b4c
+README.zh.md: 79c6bdc57868ce38b103e2d6a9cd0ac237d3d514

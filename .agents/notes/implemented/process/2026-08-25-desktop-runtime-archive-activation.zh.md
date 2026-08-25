@@ -29,3 +29,5 @@ Desktop 从现有确定性 Mythos `.tar.gz` 发布包派生分发归档。macOS 
 首次启动会执行一次解压和约 31,000 条完整性检查；当前开发机实测约 10.7 秒，重复启动的全量复验约 5.3 秒。Runtime 数据会在 App 内压缩归档之外占用 Application Support 空间；后续清理策略必须保留任一已安装版本仍在使用的 Runtime。
 
 发布打包现在要求 `MYTHOS_RUNTIME_ARCHIVE` 及同名 `.sha256`，不再要求解压后的 `MYTHOS_RUNTIME_ROOT`。由于有意包含 Developer ID 时间戳，Desktop 专用归档不再保证字节级可复现；其未签名输入仍保持确定性，签名输出则由生成摘要与 App 签名固定。签名 Release 验收仍必须覆盖分发产物的首次启动、重复启动、损坏归档和应用升级。
+
+已公证 Beta 7 App 的 Bundle 只包含 271 个普通文件和一个 49 MB Runtime 归档。已签名 Beta 6 安装通过 GitHub 后备源发现 Beta 7，经差分更新下载约 52.8 MB 后原地安装，成功激活按摘要寻址的 Runtime，并恢复健康的 Host/Web 运行面。

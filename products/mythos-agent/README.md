@@ -6,7 +6,7 @@ Mythos Agent is a product-specific coding agent built on DeepSeek Harness. This 
 
 ## Product status
 
-The product manifest is version `0.1.1` and pins DeepSeek Harness `0.1.0-rc.8`. Source and self-contained Headless/Web surfaces, a resumable interactive CLI, repeatable evaluation infrastructure, content-verified release archives, and the controller decision kernel exist. MYTHOS Desktop is at `0.2.0-beta.6` with a bundled runtime, managed service routing, signed hot configuration, and application-update infrastructure. The active work is refreshing paid evaluation evidence, completing real-repository and server-data release gates, finishing Desktop delivery verification, and connecting the controller to real project state and Lead ports.
+The product manifest is version `0.1.1` and pins DeepSeek Harness `0.1.0-rc.8`. Source and self-contained Headless/Web surfaces, a resumable interactive CLI, repeatable evaluation infrastructure, content-verified release archives, and the controller decision kernel exist. MYTHOS Desktop is at `0.2.0-beta.7` with an archived self-contained runtime, managed service routing, signed hot configuration, and verified application updates. The active work is refreshing paid evaluation evidence, completing real-repository and server-data release gates, and connecting the controller to real project state and Lead ports.
 
 The maintained project plan and evidence-backed status are in the [project documentation](docs/项目文档索引.md). That documentation is currently maintained in Simplified Chinese for the project owner.
 
