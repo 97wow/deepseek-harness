@@ -30,6 +30,11 @@ async function fetchRequired(url: URL, expected: string): Promise<void> {
   if (!body.includes(expected)) throw new Error(`${url.pathname} 缺少 ${expected}`)
 }
 
+async function fetchAbsent(url: URL): Promise<void> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  if (response.status !== 404) throw new Error(`${url.pathname} 不应对 Mythos 用户公开，实际返回 HTTP ${String(response.status)}`)
+}
+
 async function smokeWeb(releaseRoot: string, environment: NodeJS.ProcessEnv): Promise<void> {
   const entry = join(releaseRoot, 'bin', 'mythos.js')
   const child = spawn(process.execPath, [entry, 'web', '--port', '0'], {
@@ -65,8 +70,13 @@ async function smokeWeb(releaseRoot: string, environment: NodeJS.ProcessEnv): Pr
 
     if (baseUrl.hostname !== '127.0.0.1') throw new Error(`Mythos consumer Web 未绑定 loopback：${baseUrl.href}`)
     await fetchRequired(baseUrl, 'window.__DSH_BOOT__')
-    await fetchRequired(new URL('/plugins/@deepseek-ai/dsh-client-ui-agent-preset/client.js', baseUrl), 'agent-preset')
-    await fetchRequired(new URL('/plugins/@deepseek-ai/dsh-client-ui-model-selection/client.js', baseUrl), 'model')
+    for (const plugin of [
+      '@deepseek-ai/dsh-client-ui-agent-preset',
+      '@deepseek-ai/dsh-client-ui-model-selection',
+      '@deepseek-ai/dsh-client-ui-settings-models',
+      '@deepseek-ai/dsh-client-ui-settings-plugin-inventory',
+      '@deepseek-ai/dsh-client-ui-settings-plugins',
+    ]) await fetchAbsent(new URL(`/plugins/${plugin}/client.js`, baseUrl))
   } finally {
     child.kill('SIGTERM')
   }
@@ -101,7 +111,7 @@ export async function smokeExtractedRelease(releaseRoot: string): Promise<void> 
   })
   if (headless.error !== undefined) throw headless.error
   if (headless.status !== 0) throw new Error(`Mythos consumer Headless 配置启动失败：${String(headless.status)}\n${headless.stderr}`)
-  for (const expected of ['name: Mythos M3', 'model: deepseek-v4-flash', 'You are Mythos Agent']) {
+  for (const expected of ['name: claude-sonnet-5', 'model: claude-sonnet-5', 'You are Mythos Agent']) {
     if (!headless.stdout.includes(expected)) throw new Error(`Mythos consumer Headless 配置缺少 ${expected}`)
   }
   await verifyM3CliMock(releaseRoot)

@@ -29,7 +29,7 @@ function requests(toolCount = 25, includeResult = true): TestRequest[] {
     {
       path: '/chat/completions',
       body: {
-        model: 'deepseek-v4-flash',
+        model: 'claude-sonnet-5',
         messages: [
           { role: 'system', content: 'You are Mythos Agent.' },
           { role: 'user', content: prompt },
@@ -40,7 +40,7 @@ function requests(toolCount = 25, includeResult = true): TestRequest[] {
     {
       path: '/chat/completions',
       body: {
-        model: 'deepseek-v4-flash',
+        model: 'claude-sonnet-5',
         messages: [
           { role: 'assistant', tool_calls: [{
             id: 'mythos-read-proof',

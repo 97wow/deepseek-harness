@@ -42,12 +42,18 @@ async function ensureHome() {
     await mkdir(home, { recursive: true })
     await cp(sourceHome(), home, { recursive: true })
   }
-  // Product-owned display metadata advances with the Desktop build while
-  // sessions, user presets, credentials, and local settings remain untouched.
-  const bundledPreset = join(sourceHome(), '.agent-presets', 'mythos', 'preset.yml')
-  const installedPreset = join(home, '.agent-presets', 'mythos', 'preset.yml')
-  await mkdir(dirname(installedPreset), { recursive: true })
-  await cp(bundledPreset, installedPreset)
+  // Product-owned composition advances with the Desktop build while sessions,
+  // credentials, workspace state, and local settings remain untouched.
+  for (const relativePath of [
+    join('.agent-presets', 'mythos', 'agent.cordis.yml'),
+    join('.agent-presets', 'mythos', 'preset.yml'),
+    join('profiles', 'mythos', 'cordis.patch.yml'),
+    join('profiles', 'mythos-web', 'cordis.patch.yml'),
+  ]) {
+    const destination = join(home, relativePath)
+    await mkdir(dirname(destination), { recursive: true })
+    await cp(join(sourceHome(), relativePath), destination)
+  }
   return home
 }
 
@@ -61,7 +67,7 @@ function runtimeCli() {
 async function readDotEnv() {
   const candidates = [
     process.env.MYTHOS_ENV_FILE,
-    '/Users/huhu/Documents/ChatGPT/LLMAPI 2/mythos-agent/.env',
+    '/Users/huhu/Work/mythos-agent/.env',
     join(repositoryRoot, '.env'),
   ].filter(value => typeof value === 'string' && value !== '')
   for (const path of candidates) {

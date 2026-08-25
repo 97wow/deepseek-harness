@@ -12,7 +12,7 @@ export interface InteractiveTurnResult {
 export function interactiveBanner(version: string, cwd: string, permissionMode: string): string {
   return [
     `MYTHOS Agent ${version}`,
-    `M3 model: deepseek-v4-flash · cwd: ${cwd} · permission: ${permissionMode}`,
+    `模型：claude-sonnet-5 · cwd: ${cwd} · permission: ${permissionMode}`,
     '输入任务开始；/help 查看帮助，/exit 退出。',
   ].join('\n')
 }
@@ -87,7 +87,7 @@ export async function runInteractive(
       prompt()
       continue
     }
-    process.stdout.write('正在连接 M3 / 处理中…\n')
+    process.stdout.write('MYTHOS 正在处理…\n')
     const result = await runTurn(createSpec(interactiveTurnArgs(task, sessionId)))
     if (sessionId === undefined && result.sessionId !== undefined) {
       sessionId = result.sessionId

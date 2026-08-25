@@ -11,7 +11,7 @@ import { exposedSecretPolicies } from './security.js'
 
 const outputLimit = 1024 * 1024
 const requestLimit = 2 * 1024 * 1024
-const expectedModel = 'deepseek-v4-flash'
+const expectedModel = 'claude-sonnet-5'
 const expectedToolCount = 25
 const zstdMagic = 0xFD2FB528
 const decompressZstdFrame = promisify(zstdDecompress)
@@ -326,7 +326,7 @@ export function verifyM3Requests(requests: readonly MockRequest[], prompt: strin
   const first = requests[0]?.body
   const second = requests[1]?.body
   if (first === undefined || second === undefined) throw new Error('Mythos M3 mock 缺少请求体')
-  if (first.model !== expectedModel || second.model !== expectedModel) throw new Error('Mythos M3 mock 未使用 deepseek-v4-flash')
+  if (first.model !== expectedModel || second.model !== expectedModel) throw new Error('Mythos M3 mock 未使用 claude-sonnet-5')
   const firstMessages = objectRows(first.messages, '首请求 messages')
   const secondMessages = objectRows(second.messages, '次请求 messages')
   const systemMessage = firstMessages.find(message => message.role === 'system'
@@ -446,7 +446,7 @@ export async function verifyM3CliMock(releaseRoot: string): Promise<void> {
     const interactive = await runInteractiveCli(entry, workspace, interactiveEnvironment, prompt)
     const interactiveSessions = (await collectSessionFiles(sessionsRoot)).filter(path => !beforeInteractive.has(path))
     if (interactive.code !== 0) throw new Error(`Mythos M3 mock interactive CLI 退出 ${String(interactive.code)}：${interactive.stderr}`)
-    for (const expected of ['MYTHOS Agent', 'mythos> ', '正在连接 M3 / 处理中…', `MYTHOS_M3_MOCK_OK:${nonce}`]) {
+    for (const expected of ['MYTHOS Agent', 'mythos> ', 'MYTHOS 正在处理…', `MYTHOS_M3_MOCK_OK:${nonce}`]) {
       if (!interactive.stdout.includes(expected)) throw new Error(`Mythos M3 mock interactive stdout 缺少 ${expected}`)
     }
     if (!/session-id=session-[a-zA-Z0-9._-]+/u.test(interactive.stdout)) {

@@ -34,7 +34,7 @@ function openSettings() {
   const advanced = createElement('details', 'mythos-settings__advanced')
   const advancedSummary = createElement('summary', '', '高级 / 技术信息')
   const technical = createElement('dl', 'mythos-settings__technical')
-  technical.innerHTML = '<div><dt>通道</dt><dd>M3</dd></div><div><dt>模型</dt><dd>deepseek-v4-flash</dd></div>'
+  technical.innerHTML = '<div><dt>模型</dt><dd>claude-sonnet-5</dd></div>'
   const note = createElement('p', '', '连接凭据由 macOS 安全存储加密，不进入网页存储或日志。')
   const endpointLabel = createElement('label', '', '服务地址')
   const endpoint = document.createElement('input')
@@ -103,7 +103,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const identity = createElement('div', 'mythos-desktop-bar__identity', 'MYTHOS')
   identity.append(createElement('span', 'mythos-desktop-bar__beta', 'DESKTOP BETA'))
   const status = createElement('div', 'mythos-desktop-bar__status', '服务可用')
-  status.title = '智能服务：默认\n技术通道：M3\n模型：deepseek-v4-flash'
+  status.title = '智能服务：MYTHOS\n模型：claude-sonnet-5'
   const actions = createElement('div', 'mythos-desktop-bar__actions')
   const settings = createElement('button', '', '设置')
   settings.addEventListener('click', openSettings)

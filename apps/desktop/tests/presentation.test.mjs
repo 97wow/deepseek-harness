@@ -6,7 +6,7 @@ import { adaptMythosSurface, executionStatus } from '../src/presentation.mjs'
 test('hides single-choice infrastructure and translates user-facing controls', () => {
   const dom = new JSDOM(`<body>
     <button title="即将开始的这个会话所用的 Agent 预设">Mythos Agent<svg></svg></button>
-    <div><button aria-label="选择模型，当前 Mythos M3，推理等级 Max" title="Mythos M3 · Max">Mythos M3</button></div>
+    <div><button aria-label="选择模型，当前 claude-sonnet-5，推理等级 High" title="claude-sonnet-5 · High">claude-sonnet-5</button></div>
     <button aria-label="访问模式，当前：Workspace Write">Workspace Write</button>
     <button>Session log</button>
     <button aria-label="选择工作区">work</button>

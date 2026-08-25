@@ -55,7 +55,7 @@ function markSingleChoiceControls(root) {
       button.setAttribute('title', '当前助手')
       button.disabled = true
     }
-    if (/^(选择模型|Select model)/u.test(aria) || /^Mythos M3(?:\s*·|$)/u.test(title)) {
+    if (/^(选择模型|Select model)/u.test(aria) || /^(?:Mythos M3|claude-sonnet-5)(?:\s*·|$)/u.test(title)) {
       const wrapper = button.closest('div')
       if (wrapper !== null && !wrapper.hasAttribute('data-mythos-single-service')) {
         wrapper.setAttribute('data-mythos-single-service', '')
