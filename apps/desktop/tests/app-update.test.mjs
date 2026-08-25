@@ -60,6 +60,8 @@ test('falls back after a primary download failure and installs only the verified
   assert.ok(states.some(state => state.percent === 58 && state.state === 'downloading'))
   assert.equal(primary.autoDownload, true)
   assert.equal(primary.autoInstallOnAppQuit, true)
+  assert.equal(primary.allowPrerelease, true)
+  assert.equal(primary.channel, 'beta')
   assert.equal(primary.allowDowngrade, false)
   assert.deepEqual(await coordinator.check(), { percent: 100, state: 'ready', version: '0.2.0-beta.6' })
   assert.equal(errors.length, 1)

@@ -50,6 +50,11 @@ export function createAppUpdateCoordinator({ createUpdater, isPackaged, publish,
     }
     updater.autoDownload = true
     updater.autoInstallOnAppQuit = true
+    // Desktop beta builds must request beta-mac.yml consistently from both
+    // the primary generic feed and the GitHub fallback.
+    updater.allowPrerelease = true
+    updater.channel = 'beta'
+    // electron-updater enables downgrades when the channel setter runs.
     updater.allowDowngrade = false
     updater.on('checking-for-update', listeners.checking)
     updater.on('update-available', listeners.available)
