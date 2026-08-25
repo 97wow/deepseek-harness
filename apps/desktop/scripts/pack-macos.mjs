@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { validateRuntimeArchiveEntries, rewriteRuntimeIntegrityManifest } from '../src/runtime-store.mjs'
+import { pruneRuntimeForMacArm64 } from './prune-runtime.mjs'
 import { findRuntimeMachOBinaries } from './sign-macos.mjs'
 
 const execute = promisify(execFile)
@@ -33,6 +34,7 @@ async function prepareSignedRuntime(archive, identity, workRoot) {
   await mkdir(extracted)
   await execute('/usr/bin/tar', ['-xzf', archive, '-C', extracted])
   const release = join(extracted, 'mythos-agent')
+  const removedPrebuilds = await pruneRuntimeForMacArm64(release)
   const binaries = await findRuntimeMachOBinaries(release)
   const certificate = identity.startsWith('Developer ID Application:') ? identity : `Developer ID Application: ${identity}`
   for (const binary of binaries) {
@@ -45,6 +47,7 @@ async function prepareSignedRuntime(archive, identity, workRoot) {
   })
   const digest = await hashFile(output)
   await writeFile(`${output}.sha256`, `${digest}  mythos-runtime.tar.gz\n`, { mode: 0o644 })
+  process.stdout.write(`[MYTHOS Desktop] pruned ${String(removedPrebuilds.length)} incompatible node-pty prebuilds\n`)
   process.stdout.write(`[MYTHOS Desktop] signed ${String(binaries.length)} Runtime native binaries\n`)
   return output
 }

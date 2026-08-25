@@ -17,6 +17,7 @@ export default {
   // tell electron-builder the app dependency tree is handled externally.
   npmRebuild: false,
   beforeBuild: () => false,
+  electronLanguages: ['en', 'zh_CN', 'zh_TW'],
   directories: {
     output: resolve('dist'),
   },
