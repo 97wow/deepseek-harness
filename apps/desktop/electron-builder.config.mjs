@@ -13,7 +13,7 @@ export default {
   // The Electron shell has no runtime npm dependencies. DSH Host ships as the
   // separately frozen release closure under extraResources, so explicitly
   // tell electron-builder the app dependency tree is handled externally.
-  npmRebuild: true,
+  npmRebuild: false,
   beforeBuild: () => false,
   directories: {
     output: resolve('dist'),
