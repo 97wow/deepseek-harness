@@ -49,7 +49,7 @@ Both surfaces set `DSH_HOME` to this product's `home/` directory and use the sam
 | `pnpm --dir products/mythos-agent release:verify` | Run the assembled product release checks and gates. |
 | `pnpm --dir products/mythos-agent release:pack` | Create a deterministic archive and SHA-256 file from `HEAD`. |
 | `npm --prefix apps/desktop test` | Run MYTHOS Desktop presentation, routing, and signed-config tests. |
-| `MYTHOS_RUNTIME_ROOT=<release> npm --prefix apps/desktop run pack:mac` | Package the Desktop beta with an extracted Mythos runtime. |
+| `MYTHOS_RUNTIME_ARCHIVE=<release.tar.gz> npm --prefix apps/desktop run pack:mac` | Package the Desktop beta with a deterministic Mythos runtime archive and its sibling `.sha256`. |
 
 Real evaluations consume model quota and create local run data. Use the smallest suite that covers a change; do not rerun paid evaluations for documentation-only or unrelated edits.
 

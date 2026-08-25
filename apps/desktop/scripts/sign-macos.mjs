@@ -87,14 +87,10 @@ async function codesign(path, options) {
  * @returns {Promise<void>}
  */
 export async function signMacApplication(options) {
-  const runtime = join(options.app, 'Contents', 'Resources', 'mythos-agent')
   const codeItems = []
   await collectCodeItems(join(options.app, 'Contents'), codeItems)
   const orderedItems = [...new Set(codeItems)]
     .sort((left, right) => right.split('/').length - left.split('/').length)
-  if (!(await findRuntimeMachOBinaries(runtime)).every(binary => orderedItems.includes(binary))) {
-    throw new Error('Bundled runtime Mach-O discovery is incomplete')
-  }
   for (const item of orderedItems) await codesign(item, options)
   await codesign(options.app, options)
   await execute('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', options.app])

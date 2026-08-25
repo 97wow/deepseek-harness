@@ -1,9 +1,9 @@
 import { resolve } from 'node:path'
 import { signMacApplication } from './scripts/sign-macos.mjs'
 
-const runtimeRoot = process.env.MYTHOS_RUNTIME_ROOT
-if (runtimeRoot === undefined || runtimeRoot === '') {
-  throw new Error('MYTHOS_RUNTIME_ROOT must name an extracted Mythos release')
+const runtimeArchive = process.env.MYTHOS_RUNTIME_ARCHIVE
+if (runtimeArchive === undefined || runtimeArchive === '') {
+  throw new Error('MYTHOS_RUNTIME_ARCHIVE must name a packed Mythos release')
 }
 const signingIdentity = process.env.MYTHOS_MAC_SIGN_IDENTITY
 
@@ -28,7 +28,10 @@ export default {
     provider: 'generic',
     url: 'https://llmapi.pro/mythos/desktop/updates/macos/arm64',
   }],
-  extraResources: [{ from: runtimeRoot, to: 'mythos-agent' }],
+  extraResources: [
+    { from: runtimeArchive, to: 'mythos-runtime.tar.gz' },
+    { from: `${runtimeArchive}.sha256`, to: 'mythos-runtime.tar.gz.sha256' },
+  ],
   mac: {
     category: 'public.app-category.developer-tools',
     darkModeSupport: true,

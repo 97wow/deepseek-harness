@@ -8,6 +8,7 @@ import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
 import electronUpdater from 'electron-updater'
 import { createAppUpdateCoordinator } from './app-update.mjs'
 import { activeConfigRoot, checkHotConfig } from './hot-config.mjs'
+import { activatePackagedRuntime } from './runtime-store.mjs'
 import { loadServiceEndpoints, searchEndpoint, selectServiceEndpoint } from './service-routing.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -36,6 +37,7 @@ let mainWindow
 let activeEndpoint
 let updateInitialized = false
 let configRevision = 0
+let packagedReleaseRoot
 
 const appUpdates = createAppUpdateCoordinator({
   createUpdater: source => new MacUpdater(source),
@@ -52,7 +54,7 @@ function checkpoint(message) {
 }
 
 function releaseRoot() {
-  if (app.isPackaged) return join(process.resourcesPath, 'mythos-agent')
+  if (app.isPackaged) return packagedReleaseRoot
   const override = process.env.MYTHOS_RUNTIME_ROOT
   return override === undefined || override === '' ? undefined : resolve(override)
 }
@@ -342,6 +344,15 @@ async function createWindow() {
   mainWindow.show()
   checkpoint('window shown')
   try {
+    if (app.isPackaged && packagedReleaseRoot === undefined) {
+      checkpoint('activating packaged runtime')
+      packagedReleaseRoot = await activatePackagedRuntime({
+        archive: join(process.resourcesPath, 'mythos-runtime.tar.gz'),
+        digestFile: join(process.resourcesPath, 'mythos-runtime.tar.gz.sha256'),
+        storeRoot: join(app.getPath('userData'), 'runtime'),
+      })
+      checkpoint(`packaged runtime ready: ${packagedReleaseRoot}`)
+    }
     const url = await startHost()
     checkpoint('DSH Host ready')
     await mainWindow.loadURL(url)

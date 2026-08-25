@@ -49,7 +49,7 @@ pnpm --dir products/mythos-agent web
 | `pnpm --dir products/mythos-agent release:verify` | 运行产品发布检查与门禁聚合。 |
 | `pnpm --dir products/mythos-agent release:pack` | 从 `HEAD` 生成确定性归档和 SHA-256 文件。 |
 | `npm --prefix apps/desktop test` | 运行 MYTHOS Desktop 展示、路由和签名配置测试。 |
-| `MYTHOS_RUNTIME_ROOT=<release> npm --prefix apps/desktop run pack:mac` | 使用已解压 Mythos 运行时打包 Desktop Beta。 |
+| `MYTHOS_RUNTIME_ARCHIVE=<release.tar.gz> npm --prefix apps/desktop run pack:mac` | 使用确定性 Mythos Runtime 归档及其同名 `.sha256` 打包 Desktop Beta。 |
 
 真实评测会消耗模型额度并创建本地运行数据。选择覆盖变更的最小套件；不因纯文档或无关修改重跑付费评测。
 
